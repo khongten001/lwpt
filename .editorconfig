@@ -1,0 +1,34 @@
+# EditorConfig is awesome: https://EditorConfig.org
+# Conventions inherited from the native-nostalgia-stack project-structure rules.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Pascal sources: indentation managed by `lwpt format`. Trim trailing
+# whitespace + final-newline still apply.
+[*.{pas,pp,inc,dpr,lpr}]
+indent_size = 2
+
+# Makefiles: tabs are load-bearing (recipe lines must start with a tab).
+# LWPT itself doesn't have one; this is defensive for any future addition.
+[Makefile]
+indent_style = tab
+
+# Windows batch + PowerShell — CRLF is required by the shells.
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.ps1]
+end_of_line = crlf
+
+# Markdown: preserve trailing two-spaces (the line-break syntax). Final
+# newline + LF still apply.
+[*.md]
+trim_trailing_whitespace = false

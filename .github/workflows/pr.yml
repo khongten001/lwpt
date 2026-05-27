@@ -1,0 +1,83 @@
+name: PR
+
+# Fast single-runner PR gate (Ubuntu native). Mirrors the
+# GocciaScript pattern: ci.yml runs only on push to main, so
+# pr.yml is the sole pre-merge signal a PR sees.
+#
+#   pr.yml      — every PR: Ubuntu native bootstrap + install +
+#                 format --check + build + test (no e2e, no
+#                 cross-build). Typical wall-clock < 5 min.
+#   ci.yml      — push to main only: full 6-target cross-build +
+#                 per-platform native test runs (incl. e2e).
+#                 Post-merge confirmation, not a PR gate.
+#   release.yml — tag-triggered cross-build + package + publish.
+#
+# Trade-off, deliberate: a PR that introduces a platform-specific
+# regression (Windows path quirk, aarch64-only behaviour, etc.)
+# will pass pr.yml and only fail on the main-branch ci.yml run.
+# The maintainer reverts/forwards-fixes from main. This trades
+# pre-merge cross-platform certainty for cheap PR feedback, which
+# is the conscious GocciaScript design choice we mirror.
+#
+# The Ubuntu native build deliberately uses the distro FPC (same
+# as the install instructions in README.md), so a regression that
+# only shows up with the system FPC's slightly older RTL gets
+# caught here too.
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      # Skip live-network E2E tests on the fast PR runner. They run
+      # in ci.yml on every platform — Q23=c — and are the slow tier.
+      LWPT_SKIP_NETWORK: "1"
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install FPC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fpc
+          fpc -iV
+
+      - name: Bootstrap (cold build of build/lwpt)
+        run: ./bootstrap.sh
+
+      - name: lwpt --help (binary loads?)
+        run: ./build/lwpt --help
+
+      - name: lwpt install (workspace auto-discovery + symlinks)
+        run: ./build/lwpt install
+
+      - name: lwpt format --check (formatting drift?)
+        run: ./build/lwpt format --check
+
+      - name: lwpt build (compile every [build] entry)
+        run: ./build/lwpt build
+
+      - name: lwpt test (default tier — unit + integration)
+        run: ./build/lwpt test
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v19
+        with:
+          globs: "**/*.md"

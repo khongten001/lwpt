@@ -1,0 +1,324 @@
+name: CI
+
+# Two stages, mirroring the GocciaScript CI pattern (the upstream of
+# LWPT's vendored units). Sister workflows:
+#
+#   pr.yml      — every PR: full cross-build + per-platform native test
+#                 matrix (the authoritative pre-merge gate)
+#   release.yml — tag-triggered cross-build + package + publish
+#
+# ci.yml runs ONLY on push to main + manual dispatch. PRs do not
+# trigger ci.yml — pr.yml owns the PR flow, release.yml owns tag
+# pushes. This mirrors GocciaScript's ci.yml shape (push-to-main +
+# tags + workflow_dispatch — no pull_request) and avoids the
+# duplicate-build cost that comes from triggering on both push and
+# pull_request for the same commit. Post-merge, ci.yml runs once
+# on main to confirm the merged tree is green.
+#
+#   build:  Cross-compile the lwpt binary on macos-latest for each of
+#           six targets using the cross-FPC toolchain produced by
+#           toolchain.yml (cached via the lwpt-fpc-cross-* key).
+#           Per-target artefacts are the lwpt binary itself; tests
+#           compile at run time on the native runner (Q22=b).
+#
+#   test:   Per-platform native runners — install FPC via the
+#           platform's package manager, download the cross-built
+#           lwpt binary, then run the full pipeline:
+#             ./build/lwpt install
+#             ./build/lwpt format --check        (one runner is enough)
+#             ./build/lwpt test                  (default tier)
+#             ./build/lwpt test --tier=e2e       (live network, Q23=c)
+#           This exercises lwpt itself + the underlying native FPC on
+#           each platform end-to-end, including live GitHub/GitLab/
+#           Bitbucket fetches.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FPC_VERSION: "3.2.2"
+
+jobs:
+  toolchain:
+    uses: ./.github/workflows/toolchain.yml
+
+  build:
+    needs: toolchain
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-darwin
+            cpu: aarch64
+            os: darwin
+            native: true
+          - target: x86_64-darwin
+            cpu: x86_64
+            os: darwin
+          - target: x86_64-linux
+            cpu: x86_64
+            os: linux
+          - target: aarch64-linux
+            cpu: aarch64
+            os: linux
+          - target: x86_64-win64
+            cpu: x86_64
+            os: win64
+          - target: i386-win32
+            cpu: i386
+            os: win32
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore toolchain cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            fpc-cross
+            cross-binutils
+            cross-libs
+          key: ${{ needs.toolchain.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Cross-compile lwpt
+        run: |
+          set -euo pipefail
+          PREFIX="$PWD/fpc-cross"
+          export PATH="$PREFIX/bin:$PWD/cross-binutils/bin:$PATH"
+
+          CPU="${{ matrix.cpu }}"
+          OS="${{ matrix.os }}"
+          TARGET="${CPU}-${OS}"
+          NATIVE="${{ matrix.native }}"
+
+          echo "Target: ${TARGET}"
+
+          if [ "$NATIVE" = "true" ]; then
+            CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppca64"
+          else
+            case "$CPU" in
+              x86_64)  CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppcrossx64" ;;
+              i386)    CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppcross386" ;;
+              aarch64) CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppca64" ;;
+            esac
+          fi
+
+          # Linker flags per target.
+          EXTRA_FLAGS=""
+          case "$OS" in
+            linux)
+              LIBDIR=$(find "$PWD/cross-libs/${CPU}-linux" -name "libc.so" -exec dirname {} \; | head -1)
+              if [ -z "$LIBDIR" ]; then echo "::error::libc.so not found in cross-libs/${CPU}-linux"; exit 1; fi
+              EXTRA_FLAGS="-XP${CPU}-linux- -Fl${LIBDIR}"
+              ;;
+            win32|win64)
+              EXTRA_FLAGS=""
+              ;;
+            darwin)
+              SDK_ROOT="$(xcrun --show-sdk-path)"
+              SDK_LIB="${SDK_ROOT}/usr/lib"
+              SDK_FRAMEWORKS="${SDK_ROOT}/System/Library/Frameworks"
+              EXTRA_FLAGS="-Fl${SDK_LIB} -k-F${SDK_FRAMEWORKS}"
+              ;;
+          esac
+
+          # RTL + package paths per target.
+          RTL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl"
+          OBJPAS_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-objpas"
+          GEN_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-generics"
+          FCL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/fcl-process"
+          FCL_BASE_SRC="$PREFIX/share/fpcsrc/packages/fcl-base/src"
+          FCL_NET_SRC="$PREFIX/share/fpcsrc/packages/fcl-net/src"
+          OPENSSL_SRC="$PREFIX/share/fpcsrc/packages/openssl/src"
+
+          echo "RTL units: $(ls "$RTL_DIR"/*.ppu 2>/dev/null | wc -l) .ppu files"
+          test -d "$OBJPAS_DIR"
+          test -d "$GEN_DIR"
+          test -d "$FCL_DIR"
+          test -d "$FCL_BASE_SRC"
+          test -d "$FCL_NET_SRC"
+          test -d "$OPENSSL_SRC"
+
+          mkdir -p build
+
+          # Single entry point: source/lwpt.pas. -Fu / -Fi paths mirror
+          # scripts/bootstrap.pas (LWPT's own bootstrap), extended with
+          # the cross-toolchain RTL + packages.
+          echo ""
+          echo "=== Building lwpt for ${TARGET} ==="
+          "$CROSS_FPC" -T"${OS}" -O4 -dPRODUCTION -Xs -CX -XX -B \
+            -Sh \
+            -Fusource -Fisource \
+            -Fupackages/httpclient/source -Fipackages/httpclient/source \
+            -Fupackages/cli/source        -Fipackages/cli/source \
+            -Fupackages/semver/source     -Fipackages/semver/source \
+            -Fupackages/toml/source       -Fipackages/toml/source \
+            -Fupackages/testing/source    -Fipackages/testing/source \
+            -Fu"$RTL_DIR" -Fu"$OBJPAS_DIR" -Fu"$GEN_DIR" -Fu"$FCL_DIR" \
+            -Fu"$FCL_BASE_SRC" -Fu"$FCL_NET_SRC" -Fu"$OPENSSL_SRC" \
+            -FU"build/compiled" -FE"build" \
+            $EXTRA_FLAGS \
+            -dFPC_SOFT_FPUX80 \
+            source/lwpt.pas
+
+          echo ""
+          echo "=== Build artefacts for ${TARGET} ==="
+          ls -la build/
+
+      - name: Stage artefact
+        run: |
+          mkdir -p ci-artifacts
+          # Pick whichever binary name FPC produced (Unix vs Windows).
+          for candidate in build/lwpt build/lwpt.exe; do
+            if [ -f "$candidate" ]; then
+              cp "$candidate" ci-artifacts/
+            fi
+          done
+          if [ -z "$(ls -A ci-artifacts/ 2>/dev/null)" ]; then
+            echo "::error::No lwpt binary found in build/"
+            exit 1
+          fi
+          # Strip when the toolchain supports it (cross-platform via llvm-strip).
+          for bin in ci-artifacts/*; do
+            llvm-strip "$bin" 2>/dev/null || strip "$bin" 2>/dev/null || true
+          done
+          ls -la ci-artifacts/
+
+      - name: Upload build artefact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lwpt-${{ matrix.target }}
+          retention-days: 7
+          path: ci-artifacts/*
+
+  test:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-darwin
+            runner: macos-latest
+            fpc-install: brew
+            format-check: true     # one runner runs format-check (platform-independent)
+          - target: x86_64-darwin
+            runner: macos-15-intel
+            fpc-install: brew
+          - target: x86_64-linux
+            runner: ubuntu-latest
+            fpc-install: apt
+          - target: aarch64-linux
+            runner: ubuntu-24.04-arm
+            fpc-install: apt
+          - target: x86_64-win64
+            runner: windows-latest
+            fpc-install: choco
+          - target: i386-win32
+            runner: windows-latest
+            fpc-install: choco
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install FPC (brew)
+        if: matrix.fpc-install == 'brew'
+        run: |
+          brew install fpc
+          fpc -iV
+
+      - name: Install FPC (apt)
+        if: matrix.fpc-install == 'apt'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fpc
+          fpc -iV
+
+      - name: Install FPC (choco)
+        if: matrix.fpc-install == 'choco'
+        run: |
+          choco install -y freepascal
+          # Add the FPC bin to PATH for subsequent steps. Chocolatey
+          # installs to a versioned dir under C:\fpc — find it.
+          FPC_BIN=$(find /c/fpc -name fpc.exe -type f 2>/dev/null | head -1)
+          if [ -z "$FPC_BIN" ]; then echo "::error::Chocolatey FPC install: fpc.exe not found"; exit 1; fi
+          echo "$(dirname "$FPC_BIN")" >> "$GITHUB_PATH"
+
+      - name: Download lwpt artefact
+        uses: actions/download-artifact@v8
+        with:
+          name: lwpt-${{ matrix.target }}
+          path: build/
+
+      - name: Mark binary executable
+        if: runner.os != 'Windows'
+        run: chmod +x build/lwpt
+
+      - name: Sanity check — lwpt --help
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/lwpt.exe --help
+          else
+            ./build/lwpt --help
+          fi
+
+      - name: Check Windows TLS dependencies (SChannel only, no OpenSSL)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Per ADR-0016: TransportSecurity.pas uses SChannel on Windows,
+          # so the cross-built lwpt.exe must NOT pull in FPC's openssl
+          # unit. A presence of `libssl` or `libcrypto` substrings in
+          # the binary means someone accidentally added `uses OpenSSL`
+          # under a Windows-active codepath (the unit registers the DLL
+          # names for runtime LoadLibrary). Mirrors GocciaScript's same
+          # guard verbatim.
+          $path = "build/lwpt.exe"
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $text = [System.Text.Encoding]::Latin1.GetString($bytes)
+          if ($text -match "libssl|libcrypto") {
+            throw "lwpt.exe must not depend on OpenSSL DLLs for HTTPS on Windows (SChannel is the only backend per ADR-0016)"
+          }
+          Write-Host "OK: no libssl/libcrypto references in lwpt.exe"
+
+      - name: lwpt install (workspace auto-discovery + linking)
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/lwpt.exe install
+          else
+            ./build/lwpt install
+          fi
+
+      - name: lwpt format --check (one runner)
+        if: matrix.format-check == true
+        run: |
+          ./build/lwpt format --check
+
+      - name: lwpt test (default tier)
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/lwpt.exe test
+          else
+            ./build/lwpt test
+          fi
+
+      - name: lwpt test --tier=e2e (live network — every platform per Q23=c)
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ./build/lwpt.exe test --tier=e2e
+          else
+            ./build/lwpt test --tier=e2e
+          fi

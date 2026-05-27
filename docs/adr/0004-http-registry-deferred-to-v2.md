@@ -1,0 +1,15 @@
+# HTTP registry source kind deferred to v2
+
+The spike included consumer code for an HTTP flat-registry source kind (`source = "http"` in the manifest, `NegotiateVersion`, `PickFromIndex` against a `<registry>/<name>/index.toml`). The consumer logic is fixture-tested but was never validated against a live registry, and there is no registry publishing tooling at all — no `lwpt publish`, no spec for what an `index.toml` must look like, no example registry. We **remove `skHttp` from v1 entirely** — the consumer code is deleted, the source kind is gone from `TSourceKind`, manifests specifying `source = "http"` now fail cleanly with a clear migration error, and the spike code is archived to `docs/spikes/http-registry-spike.md` as prior art for v2. The v1 source-kind catalog is `github` / `gitlab` / `bitbucket` / `release` / `local`. The reason for the deferral is that untested code in a shipped product rots, the git-host source kinds already cover the Pascal-2026 reality of "every library lives on a git host", and standing up a central registry is a massive non-technical commitment (hosting, moderation, name-squatting policy, takedown process, legal handling) that the project has no funding or timeline to absorb.
+
+## Considered Options
+
+- **Spec the registry + harden the consumer + live-test against a mock GitHub Pages registry** (no publish CLI, no central host). Middle scope; rejected because shipping a spec without an implementation is worse than nothing — early adopters get a paper standard they can't easily validate against.
+- **Full registry: spec + consumer + `lwpt publish` + central registry host.** Largest scope; rejected because it doubles the project's surface from "package manager + toolkit" to "package manager + toolkit + registry operator", and the registry-operator role is permanent.
+- **Keep the spike code as-is, documented as experimental.** Rejected because dead code paths get worse over time, not better.
+
+## Consequences
+
+- Any spike-era manifest using `source = "http"` becomes invalid in v1. Mitigation: clear error message naming the migration ("use github/gitlab/bitbucket/release/local"). Realistic at spike-stage; no actual production users yet.
+- Re-adding `skHttp` in v2 requires re-deriving the consumer against the v2 spec. The archived spike code in `docs/spikes/` is a starting point, not a finished implementation.
+- The decision to **not** run a central registry leaves Pascal package distribution on git-host-archive endpoints. That's the Go-pre-modules pattern and the Pascal community has already implicitly accepted it via Boss (`github.com/owner/repo` dependencies). Defensible long-term position.

@@ -1,0 +1,406 @@
+name: Release
+
+# Tag-triggered release pipeline. Companion to ci.yml:
+#
+#   ci.yml      — push/PR validation (build + test on every platform)
+#   release.yml — tag push: cross-build → package → publish GitHub Release
+#   pr.yml      — fast single-runner PR feedback (system FPC)
+#
+# Triggers on tags matching:
+#   v?[0-9]+.[0-9]+.[0-9]+         e.g.  v0.1.0, 0.1.0, v1.2.3
+#   v?[0-9]+.[0-9]+.[0-9]+-*       e.g.  v0.1.0-rc.1 (pre-releases)
+#
+# The version embedded in archive names is the tag with any leading `v`
+# stripped (per ADR-0009 — semver 2.0.0 form). A `v` prefix on the tag
+# itself is accepted but optional.
+#
+# Reuses toolchain.yml (workflow_call) to avoid duplicating the
+# expensive cross-FPC build. The build job mirrors ci.yml's `build`
+# stage exactly so a tagged commit produces the same binaries the
+# regular CI run would have.
+#
+# Pre-release detection: tags with a hyphen after the version
+# (e.g. `v1.0.0-rc.1`) are published as pre-releases. Stable tags
+# (e.g. `v1.0.0`) are published as full releases.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (must already exist; leave empty to use refs/tags/* trigger)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write   # softprops/action-gh-release needs this to create the release
+
+env:
+  FPC_VERSION: "3.2.2"
+
+jobs:
+  toolchain:
+    uses: ./.github/workflows/toolchain.yml
+
+  build:
+    needs: toolchain
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-darwin
+            cpu: aarch64
+            os: darwin
+            display: macos-arm64
+            native: true
+          - target: x86_64-darwin
+            cpu: x86_64
+            os: darwin
+            display: macos-x64
+          - target: x86_64-linux
+            cpu: x86_64
+            os: linux
+            display: linux-x64
+          - target: aarch64-linux
+            cpu: aarch64
+            os: linux
+            display: linux-arm64
+          - target: x86_64-win64
+            cpu: x86_64
+            os: win64
+            display: windows-x64
+          - target: i386-win32
+            cpu: i386
+            os: win32
+            display: windows-x86
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Restore toolchain cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            fpc-cross
+            cross-binutils
+            cross-libs
+          key: ${{ needs.toolchain.outputs.cache-key }}
+          fail-on-cache-miss: true
+
+      - name: Cross-compile lwpt
+        run: |
+          set -euo pipefail
+          PREFIX="$PWD/fpc-cross"
+          export PATH="$PREFIX/bin:$PWD/cross-binutils/bin:$PATH"
+
+          CPU="${{ matrix.cpu }}"
+          OS="${{ matrix.os }}"
+          TARGET="${CPU}-${OS}"
+          NATIVE="${{ matrix.native }}"
+
+          echo "Target: ${TARGET}"
+
+          if [ "$NATIVE" = "true" ]; then
+            CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppca64"
+          else
+            case "$CPU" in
+              x86_64)  CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppcrossx64" ;;
+              i386)    CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppcross386" ;;
+              aarch64) CROSS_FPC="$PREFIX/lib/fpc/${FPC_VERSION}/ppca64" ;;
+            esac
+          fi
+
+          EXTRA_FLAGS=""
+          case "$OS" in
+            linux)
+              LIBDIR=$(find "$PWD/cross-libs/${CPU}-linux" -name "libc.so" -exec dirname {} \; | head -1)
+              if [ -z "$LIBDIR" ]; then echo "::error::libc.so not found in cross-libs/${CPU}-linux"; exit 1; fi
+              EXTRA_FLAGS="-XP${CPU}-linux- -Fl${LIBDIR}"
+              ;;
+            win32|win64)
+              EXTRA_FLAGS=""
+              ;;
+            darwin)
+              SDK_ROOT="$(xcrun --show-sdk-path)"
+              SDK_LIB="${SDK_ROOT}/usr/lib"
+              SDK_FRAMEWORKS="${SDK_ROOT}/System/Library/Frameworks"
+              EXTRA_FLAGS="-Fl${SDK_LIB} -k-F${SDK_FRAMEWORKS}"
+              ;;
+          esac
+
+          RTL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl"
+          OBJPAS_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-objpas"
+          GEN_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-generics"
+          FCL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/fcl-process"
+          FCL_BASE_SRC="$PREFIX/share/fpcsrc/packages/fcl-base/src"
+          FCL_NET_SRC="$PREFIX/share/fpcsrc/packages/fcl-net/src"
+          OPENSSL_SRC="$PREFIX/share/fpcsrc/packages/openssl/src"
+
+          mkdir -p build
+
+          # Release-grade build: -O4 -dPRODUCTION -Xs -CX -XX -B.
+          # Same flag set as ci.yml's build stage, so a tagged commit's
+          # binary equals what CI produces — single artefact provenance.
+          echo "=== Building lwpt for ${TARGET} (release) ==="
+          # shellcheck disable=SC2086  # $EXTRA_FLAGS is intentionally word-split
+          "$CROSS_FPC" -T"${OS}" -O4 -dPRODUCTION -Xs -CX -XX -B \
+            -Sh \
+            -Fusource -Fisource \
+            -Fupackages/httpclient/source -Fipackages/httpclient/source \
+            -Fupackages/cli/source        -Fipackages/cli/source \
+            -Fupackages/semver/source     -Fipackages/semver/source \
+            -Fupackages/toml/source       -Fipackages/toml/source \
+            -Fupackages/testing/source    -Fipackages/testing/source \
+            -Fu"$RTL_DIR" -Fu"$OBJPAS_DIR" -Fu"$GEN_DIR" -Fu"$FCL_DIR" \
+            -Fu"$FCL_BASE_SRC" -Fu"$FCL_NET_SRC" -Fu"$OPENSSL_SRC" \
+            -FU"build/compiled" -FE"build" \
+            $EXTRA_FLAGS \
+            -dFPC_SOFT_FPUX80 \
+            source/lwpt.pas
+
+          ls -la build/
+
+      - name: Stage + strip binary
+        run: |
+          mkdir -p staged
+          for candidate in build/lwpt build/lwpt.exe; do
+            if [ -f "$candidate" ]; then
+              cp "$candidate" staged/
+            fi
+          done
+          if [ -z "$(ls -A staged/ 2>/dev/null)" ]; then
+            echo "::error::No lwpt binary found in build/"
+            exit 1
+          fi
+          for bin in staged/*; do
+            llvm-strip "$bin" 2>/dev/null || strip "$bin" 2>/dev/null || true
+          done
+          ls -la staged/
+
+      - name: Check Windows TLS dependencies (SChannel only, no OpenSSL)
+        if: matrix.os == 'win64' || matrix.os == 'win32'
+        run: |
+          # Per ADR-0016: Windows builds use SChannel for TLS — the
+          # cross-built lwpt.exe must NOT pull in FPC's openssl unit
+          # (which would embed `libssl` / `libcrypto` DLL-name strings
+          # for runtime LoadLibrary). Catches the case where someone
+          # adds `uses OpenSSL` under a Windows-active codepath.
+          # Mirrors GocciaScript's same guard and ci.yml's test-job
+          # check; release.yml needs its own copy because tag pushes
+          # do not trigger ci.yml.
+          if LC_ALL=C grep -ao 'libssl\|libcrypto' staged/lwpt.exe | head -1 | grep -q .; then
+            echo "::error::lwpt.exe references libssl/libcrypto — must use SChannel only on Windows (ADR-0016)"
+            exit 1
+          fi
+          echo "OK: no libssl/libcrypto references in staged/lwpt.exe"
+
+      - name: Upload release artefact
+        uses: actions/upload-artifact@v7
+        with:
+          name: lwpt-release-${{ matrix.target }}
+          retention-days: 7
+          path: staged/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag + version
+        id: ver
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+
+          # Pre-release iff the version contains a hyphen (`-rc.1`, `-alpha`).
+          if echo "$VERSION" | grep -q -- '-'; then
+            PRERELEASE=true
+          else
+            PRERELEASE=false
+          fi
+
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Tag:        $TAG"
+          echo "Version:    $VERSION"
+          echo "Prerelease: $PRERELEASE"
+
+      - name: Download all build artefacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts/
+          pattern: lwpt-release-*
+
+      - name: Package per-target archives
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+
+          declare -A DISPLAY=(
+            ["aarch64-darwin"]="macos-arm64"
+            ["x86_64-darwin"]="macos-x64"
+            ["x86_64-linux"]="linux-x64"
+            ["aarch64-linux"]="linux-arm64"
+            ["x86_64-win64"]="windows-x64"
+            ["i386-win32"]="windows-x86"
+          )
+
+          targets=("aarch64-darwin" "x86_64-darwin" "x86_64-linux" "aarch64-linux" "x86_64-win64" "i386-win32")
+
+          mkdir -p dist
+
+          for target in "${targets[@]}"; do
+            artefact_dir="artifacts/lwpt-release-${target}"
+            if [ ! -d "$artefact_dir" ]; then
+              echo "::warning::Skipping $target (no artefact present)"
+              continue
+            fi
+
+            display="${DISPLAY[$target]}"
+            archive_base="lwpt-${VERSION}-${display}"
+            pkg_dir="dist/${archive_base}"
+            mkdir -p "$pkg_dir"
+
+            # Binary (Windows ships .exe, Unix ships extension-less).
+            if [ -f "$artefact_dir/lwpt.exe" ]; then
+              cp "$artefact_dir/lwpt.exe" "$pkg_dir/"
+            elif [ -f "$artefact_dir/lwpt" ]; then
+              cp "$artefact_dir/lwpt" "$pkg_dir/"
+              chmod +x "$pkg_dir/lwpt"
+            else
+              echo "::error::No lwpt binary inside $artefact_dir"
+              exit 1
+            fi
+
+            # Bundle docs the installer scripts and humans alike will look at.
+            for f in README.md CONTEXT.md CONTRIBUTING.md AGENTS.md; do
+              if [ -f "$f" ]; then cp "$f" "$pkg_dir/"; fi
+            done
+            mkdir -p "$pkg_dir/docs"
+            cp docs/quick-start.md "$pkg_dir/docs/" 2>/dev/null || true
+            cp docs/architecture.md "$pkg_dir/docs/" 2>/dev/null || true
+            cp docs/build-system.md "$pkg_dir/docs/" 2>/dev/null || true
+
+            cd dist
+            if [[ "$target" == *win* ]]; then
+              zip -qr "${archive_base}.zip" "${archive_base}"
+            else
+              tar -czf "${archive_base}.tar.gz" "${archive_base}"
+            fi
+            cd ..
+
+            rm -rf "$pkg_dir"
+          done
+
+          echo ""
+          echo "=== Release archives ==="
+          ls -la dist/
+
+      - name: Generate SHA-256 checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sums_tmp="$(mktemp)"
+          # Globs are restricted to the archive extensions so the checksums
+          # file (lwpt-<v>-checksums.txt) is never hashed against itself.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum lwpt-*.tar.gz lwpt-*.zip > "$sums_tmp" 2>/dev/null || true
+          else
+            shasum -a 256 lwpt-*.tar.gz lwpt-*.zip > "$sums_tmp" 2>/dev/null || true
+          fi
+          if [ ! -s "$sums_tmp" ]; then
+            echo "::error::No archives found to checksum in dist/"
+            ls -la
+            exit 1
+          fi
+          mv "$sums_tmp" "lwpt-${{ steps.ver.outputs.version }}-checksums.txt"
+          cat "lwpt-${{ steps.ver.outputs.version }}-checksums.txt"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
+          draft: false
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/lwpt-*.tar.gz
+            dist/lwpt-*.zip
+            dist/lwpt-*-checksums.txt
+
+  changelog:
+    needs: publish
+    if: ${{ needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Generate full changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: -o CHANGELOG.md
+        env:
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Open changelog PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME}"
+          BRANCH="changelog/${VERSION}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH" origin/main
+          git add CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No changelog changes to PR."
+            exit 0
+          fi
+          git commit -m "Update CHANGELOG.md for ${VERSION}"
+          git push --force-with-lease origin "$BRANCH"
+          if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -q OPEN; then
+            echo "PR already exists for $BRANCH; updated branch."
+          else
+            gh pr create \
+              --title "Update CHANGELOG.md for ${VERSION}" \
+              --body "Auto-generated changelog update for the ${VERSION} release. Mirrors the entries that landed in the GitHub Release notes; the difference is that this PR commits them to \`CHANGELOG.md\` on \`main\`." \
+              --base main \
+              --head "$BRANCH"
+          fi

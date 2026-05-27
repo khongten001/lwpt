@@ -1,0 +1,23 @@
+# Diamond root: depends on branch-a and branch-b, which both depend
+# on leaf-c. Used by tests/integration/InstallLocalDiamond.Test.pas
+# to validate the transitive resolver's deduplication + lockfile shape
+# for the canonical diamond graph:
+#
+#                  root
+#                  /  \
+#             branch-a  branch-b
+#                  \  /
+#                  leaf-c
+#
+# All source = "local" so the test doesn't touch the network. Paths
+# resolve relative to the CWD at install time (the root manifest's
+# directory once the test chdirs into it).
+
+[package]
+name = "diamond-root"
+version = "0.0.0"
+units = ["src"]
+
+[dependencies]
+branch-a = "../a"
+branch-b = "../b"

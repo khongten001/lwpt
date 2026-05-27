@@ -1,0 +1,7 @@
+[package]
+name = "branch-b"
+version = "1.0.0"
+units = ["src"]
+
+[dependencies]
+leaf-c = "../c"

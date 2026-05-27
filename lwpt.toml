@@ -1,0 +1,66 @@
+# LWPT's own manifest — self-host per ADR-0005.
+#
+# The bootstrap script (scripts/bootstrap.pas) produces the first
+# build/lwpt binary via a single fpc invocation. After that,
+# ./build/lwpt build is the canonical build entry point and consumes
+# this manifest.
+
+[package]
+name = "lwpt"
+version = "0.1.0"
+units = ["source"]
+
+[build]
+lwpt = { source = "source/{item.name}.pas", output = "build/{item.name}" }
+
+# [workspaces] — monorepo workspace declaration per the ADR-0014
+# amendment "Workspaces" (Q19=b, Q21=a). Each matching dir that
+# carries its own lwpt.toml is auto-discovered + auto-installed
+# as a local-path dep (symlinked into .lwpt/modules/<name>/, since
+# they're inside the project root). No separate [dependencies]
+# block needed — pre-amendment LWPT had four explicit local-path
+# entries here that this single include glob replaces.
+[workspaces]
+include = ["packages/*"]
+
+# [prebuild] — whole-build hooks (ADR-0011). Each entry runs via
+# InstantFPC before any [build] entry compiles. Staleness-gated by
+# `inputs` + `output`: skips when the output is newer than every input.
+#
+# stamp-version: derives source/Version.inc from this manifest's
+# [package].version field. Consumed by LWPT.Core.pas's `{$I Version.inc}`.
+# Single source of truth for the binary's --version output; structurally
+# prevents drift between the constant in the binary and the manifest.
+[prebuild]
+stamp-version = { script = "scripts/stamp-version.pas",
+                  inputs = ["lwpt.toml"],
+                  output = "source/Version.inc" }
+
+# [lwpt] — toolkit-state overrides. None needed: the defaults
+# (.lwpt/modules/, .lwpt/archives/, .lwpt/tmp/, lwpt.cfg) match this
+# project's layout. Section omitted intentionally.
+
+# [format] — formatter scoping per ADR-0007.
+#
+# `include` adds globs on top of [package].units; `exclude` subtracts.
+# Both are arrays of globs (`*` / `**` / `?` plus literal paths).
+# Plain dir names are shorthand for `<dir>/*.{pas,inc,dpr,lpr}`
+# (top-level only). Recursion is explicit via `**`.
+#
+# include: the project-owned test code lives under tests/integration/,
+# tests/support/, and tests/e2e/. Fixtures under tests/fixtures/ are
+# intentionally NOT included — those .pas files are test inputs, not
+# project code.
+#
+# No exclude entries: per ADR-0017, the root owns formatting by
+# default. Each workspace package can override by declaring its own
+# `[format]` section in its `packages/<name>/lwpt.toml`; absent such
+# a section, the root's canonical style applies recursively.
+[format]
+include = [
+  "tests/integration/*.pas",
+  "tests/support/*.pas",
+  "tests/e2e/*.pas",
+  "packages/**/*.pas",
+  "packages/**/*.inc",
+]

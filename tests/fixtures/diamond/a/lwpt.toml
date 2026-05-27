@@ -1,0 +1,10 @@
+[package]
+name = "branch-a"
+version = "1.0.0"
+units = ["src"]
+
+# leaf-c path resolves relative to the install-time CWD (root manifest's
+# dir, not branch-a's). See the fixture README in
+# tests/fixtures/diamond/root/lwpt.toml.
+[dependencies]
+leaf-c = "../c"
