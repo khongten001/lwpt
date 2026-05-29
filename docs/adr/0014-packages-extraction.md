@@ -84,6 +84,7 @@ The graduation arc from [ADR-0003](./0003-vendored-permanent-fork-graduation.md)
 - **`CompilePascal` inherits `@lwpt.cfg`** when present, so per-test compiles see the same dep search paths that `lwpt build` uses. Without this, every test that transitively imports a package's unit fails with `Can't find unit X`.
 
 - **`[format] exclude` collapses** from the previous list of individual `source/<unit>.pas` entries to:
+
   ```toml
   exclude = [
     "source/Platform.pas",
@@ -93,6 +94,7 @@ The graduation arc from [ADR-0003](./0003-vendored-permanent-fork-graduation.md)
     "packages/**",
   ]
   ```
+
   Each package can grow its own per-package `lwpt format` story when ready; the root formatter doesn't reach into them.
 
 - **`CONTEXT.md` gains a `Package (graduated)` glossary entry** disambiguating from the `Vendored` term (which now describes the broader notion) and from `Module` / `.lwpt/modules/` (the installed-dep-tree term). `Vendored` is updated to acknowledge that vendored units mostly live in `packages/<name>/` post-ADR-0014, with `source/` holding the remainder.
@@ -118,7 +120,7 @@ The npm-ecosystem precedent informed the implementation choice — npm + pnpm bo
 
 ### Decision
 
-**Local-path deps install as a symlink (Unix) or NTFS junction (Windows) IF the resolved absolute path is inside the project root. Otherwise (external-path deps: `../../X`, `/abs/X`), the existing recursive-copy path is preserved.** Per-dep determination; a single project can have both kinds.
+**Local-path deps install as a symlink (Unix) or NTFS junction (Windows) IF the resolved absolute path is inside the project root. Otherwise (external-path deps: `../../X`, `/abs/X`), the existing recursive-copy path is preserved.** Per-dep determination; a single project can have both kinds. Unix symlink targets are written relative to the link's parent directory (for example `.lwpt/modules/cli -> ../../packages/cli/`), matching the npm/pnpm/Bun-style in-tree link shape and preserving zero-install after a fresh clone in a different absolute path.
 
 **Junction creation on Windows uses direct OS calls — no `mklink /J` shell-out.** `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, then `DeviceIoControl` with `FSCTL_SET_REPARSE_POINT` carrying an `IO_REPARSE_TAG_MOUNT_POINT` `REPARSE_DATA_BUFFER`. ~80 lines of Windows API in `LWPT.Core.pas`'s `CreateDirLink` function. The TProcess-spawn alternative would have been simpler but adds latency + couples us to `mklink` being present in the PATH (it's a CMD builtin so always is, but the indirection adds nothing).
 
@@ -138,7 +140,7 @@ Documented by pnpm's [issue #10707](https://github.com/pnpm/pnpm/issues/10707): 
 
 ### Consequences
 
-- **`source/LWPT.Core.pas` gains four helpers**: `IsPathInside`, `IsDirSymlinkOrJunction`, `RemoveDirLink`, `CreateDirLink`, plus the orchestrator `WipeInstalledDep`. Each is conditionally compiled per platform (`{$IFDEF UNIX}` / `{$IFDEF MSWINDOWS}`). The Windows path uses `CreateFileW` / `DeviceIoControl` / `RemoveDirectoryW` / `GetFileAttributesW` from FPC's bundled `Windows` unit; no third-party headers.
+- **`source/LWPT.Core.pas` gains four helpers**: `IsPathInside`, `IsDirSymlinkOrJunction`, `RemoveDirLink`, `CreateDirLink`, plus the orchestrator `WipeInstalledDep`. Each is conditionally compiled per platform (`{$IFDEF UNIX}` / `{$IFDEF MSWINDOWS}`). The Unix path creates relative symlinks; the Windows path uses absolute NTFS junction targets via `CreateFileW` / `DeviceIoControl` / `RemoveDirectoryW` / `GetFileAttributesW` from FPC's bundled `Windows` unit; no third-party headers.
 - **`FetchToCache` signature grows by one parameter — `AProjectRoot`** — the absolute directory of the root manifest. `CmdInstall` passes `ExtractFilePath(ExpandFileName(AManifestPath))`. The skLocal branch tests `IsPathInside(AProjectRoot, ExpandedLocalPath)` and picks link-vs-copy accordingly.
 - **`ResolveGraph` signature grows by one parameter too** — propagating `AProjectRoot` to `FetchToCache`.
 - **Per-dep log lines**: `linked httpclient` / `copied my-fork` instead of the silent prior behaviour. The user sees what shape the install took.
@@ -159,13 +161,13 @@ The first two waves (in-repo extraction + symlink/junction for monorepo deps) ma
 
 ### Considered options
 
-**Q19 — Manifest shape**
+#### Q19 — Manifest shape
 
 - **Top-level field** (`workspaces = ["packages/*"]`, strict npm/yarn/bun mirror). Rejected: the LWPT manifest is uniformly section-per-concept (`[format]`, `[targets]→[build]`, `[generated]`, `[sources]`, the hook sections). A bare top-level non-section key would be the only one — unnecessarily exceptional.
 - **Field on `[package]`** (`[package].workspaces = [...]`). Rejected: `[package]` is about project identity; workspaces are topology. Locality argument is weak.
 - **`[workspaces]` section with `include` + `exclude` arrays.** *Chosen.* Mirrors `[format] include/exclude` exactly; same glob syntax (`*` / `**` / `?` + literal paths); same parser. Extensible (room for future fields like `default-version`, `inherit-deps`).
 
-**Q20 — Inter-workspace dep syntax**
+#### Q20 — Inter-workspace dep syntax
 
 - **Auto-resolve by name** (`httpclient = "*"` — if name matches a workspace, use it; else registry). Rejected: silent fall-through to registry when a workspace is renamed/removed could install the wrong package — a real footgun. The strict semantics of `workspace:` exist precisely to prevent this.
 - **Both `workspace:` (strict) and bare-name (auto-resolve)**. Rejected: a bare `httpclient = "*"` would have ambiguous source-of-truth (workspace if present, registry otherwise) — a runtime decision the manifest reader can't predict statically.
@@ -186,11 +188,13 @@ The first two waves (in-repo extraction + symlink/junction for monorepo deps) ma
 - **Local-path dep resolution is preserved unchanged.** Explicit `[dependencies] httpclient = "./packages/httpclient"` style entries continue to work; `[workspaces]` auto-discovery is **additive**, not replacement. The auto-add loop skips any workspace whose name already appears in `[dependencies]` — the explicit entry wins. So a manifest with BOTH `[workspaces] include = ["packages/*"]` AND `[dependencies] foo = "./packages/foo"` gets one `foo` entry (the explicit one) plus auto-added entries for every other workspace under `packages/`. Verified by smoke test: scratch project with explicit + auto-discovered entries produces exactly one entry per name.
 
 - **Discovery shape:**
+
   ```toml
   [workspaces]
   include = ["packages/*"]
   exclude = ["packages/legacy/*"]   # optional
   ```
+
   Each `include` glob walks the project tree relative to the root manifest's directory; each matching dir that contains a `lwpt.toml` becomes a workspace. `exclude` globs subtract from the set (same semantics as `[format].exclude`). Duplicate workspace names (two workspaces with the same `[package].name`) raise `EManifestError` at load.
 
 - **Auto-add to `Result.Deps`**: each discovered workspace not already present in the explicit `[dependencies]` block becomes a virtual local-path entry with `SrcKind = skLocal`, `SrcLocator = <resolved path>`, `SrcOriginal = "workspace:auto"` (for traceability — the lockfile shows the provenance). Explicit entries with the same name take precedence (the user's override wins). The resolver's BFS then handles them like any other local-path dep — symlinked via the ADR-0014-amendment-"Symlink/junction" path since they're inside the project root.

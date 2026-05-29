@@ -32,7 +32,13 @@ program InstallLocalDiamond.Test;
 {$mode delphi}{$H+}
 
 uses
+  {$IFDEF UNIX}
+  BaseUnix,
+  {$ENDIF}
   Classes,
+  {$IFDEF MSWINDOWS}
+  Process,
+  {$ENDIF}
   StrUtils,
   SysUtils,
 
@@ -52,6 +58,7 @@ type
     procedure TestInstallProducesCfgWithThreeUnitPaths;
     procedure TestEachModuleTreeExists;
     procedure TestInstallIsIdempotent;
+    procedure TestInstallReplacesBrokenModuleLink;
     procedure TestFrozenSucceedsWithoutRewritingLock;
   end;
 
@@ -253,6 +260,55 @@ begin
   Expect<string>(Lock2).ToBe(Lock1);
 end;
 
+procedure TInstallLocalDiamond.TestInstallReplacesBrokenModuleLink;
+var
+  ModulePath: string;
+  {$IFDEF UNIX}
+  MissingTargetPath: string;
+  {$ENDIF}
+  {$IFDEF MSWINDOWS}
+  TargetPath: string;
+  P: TProcess;
+  {$ENDIF}
+begin
+  ModulePath := FRoot + '/.lwpt/modules/branch-a';
+  DiamondRecursiveDelete(ModulePath);
+
+  {$IFDEF UNIX}
+  MissingTargetPath := FScratch + '/missing-branch-a-target';
+  DiamondRecursiveDelete(MissingTargetPath);
+  if FileExists(MissingTargetPath) then
+    DeleteFile(MissingTargetPath);
+  Expect<Integer>(FpSymlink(
+    PChar(MissingTargetPath),
+    PChar(ModulePath))).ToBe(0);
+  {$ENDIF}
+
+  {$IFDEF MSWINDOWS}
+  TargetPath := FScratch + '/missing-junction-target';
+  DiamondRecursiveDelete(TargetPath);
+  ForceDirectories(TargetPath);
+  P := TProcess.Create(nil);
+  try
+    P.Executable := 'cmd.exe';
+    P.Parameters.Add('/C');
+    P.Parameters.Add('mklink');
+    P.Parameters.Add('/J');
+    P.Parameters.Add(ModulePath);
+    P.Parameters.Add(TargetPath);
+    P.Options := [poWaitOnExit];
+    P.Execute;
+    Expect<Integer>(P.ExitStatus).ToBe(0);
+  finally
+    P.Free;
+  end;
+  DiamondRecursiveDelete(TargetPath);
+  {$ENDIF}
+
+  CmdInstall('lwpt.toml', False);
+  Expect<Boolean>(FileExists(ModulePath + '/src/BranchA.pas')).ToBe(True);
+end;
+
 procedure TInstallLocalDiamond.TestFrozenSucceedsWithoutRewritingLock;
 var
   LockBefore, LockAfter: string;
@@ -280,6 +336,8 @@ begin
     TestEachModuleTreeExists);
   Test('install: re-running is idempotent (lockfile byte-equal)',
     TestInstallIsIdempotent);
+  Test('install: broken .lwpt/modules link is replaced',
+    TestInstallReplacesBrokenModuleLink);
   Test('install --frozen: succeeds + leaves the lockfile unchanged',
     TestFrozenSucceedsWithoutRewritingLock);
 end;
