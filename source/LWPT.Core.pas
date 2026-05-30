@@ -360,21 +360,22 @@ function  SHA256Hex(const AData: TBytes): string;
 procedure VerifyAgainstLockfile(const AResolved: array of TResolved;
   const ALockEntries: array of TResolved);
 
-{ Cross-process install lock (ADR-0002 idempotency consequences). Flock-
-  based on Unix; the lock auto-releases on FD close (process exit), so
-  there's no stale-lock cleanup problem to solve. Construct at the top
-  of a write-sensitive operation; destroy releases. EConcurrencyError
-  if another process holds the lock. A later cycle will add the Windows path.
+{ Cross-process install lock (ADR-0002 idempotency consequences).
+  Construct at the top of a write-sensitive operation; destroy releases.
+  EConcurrencyError if another process holds the lock.
 
-  The lock file holds the holder's PID as a single line of text — used
-  only for diagnostics in the error message (the real synchronization
-  is flock-based, not PID-based). }
+  The lock file holds the holder's PID as a single line of text for
+  diagnostics. File existence is also the stale-lock signal after a crash;
+  `lwpt repair` clears it. }
 type
   TInstallLock = class
   private
     FPath: string;
     {$IFDEF UNIX}
     FFD: LongInt;
+    {$ENDIF}
+    {$IFDEF MSWINDOWS}
+    FHandle: THandle;
     {$ENDIF}
   public
     constructor Create(const APath: string);
@@ -390,6 +391,65 @@ procedure ExpandFormatPattern(const APattern: string; AList: TStringList;
   AErrorOnMissingLiteral: Boolean);
 
 implementation
+
+function FPCExecutable: string;
+begin
+  Result := GetEnvironmentVariable('LWPT_FPC');
+  if Result = '' then
+    Result := GetEnvironmentVariable('FPC');
+  if Result <> '' then
+    Exit;
+  {$IFDEF MSWINDOWS}
+  Result := 'fpc.exe';
+  {$ELSE}
+  Result := 'fpc';
+  {$ENDIF}
+end;
+
+function InstantFPCExecutable: string;
+begin
+  Result := GetEnvironmentVariable('LWPT_INSTANTFPC');
+  if Result = '' then
+    Result := GetEnvironmentVariable('INSTANTFPC');
+  if Result <> '' then
+    Exit;
+  {$IFDEF MSWINDOWS}
+  Result := 'instantfpc.exe';
+  {$ELSE}
+  Result := 'instantfpc';
+  {$ENDIF}
+end;
+
+procedure AddEnvUnitPathParameters(AParameters: TStrings);
+var
+  Raw, Part : string;
+  StartAt, i : Integer;
+begin
+  Raw := GetEnvironmentVariable('LWPT_FPC_UNIT_PATHS');
+  if Raw = '' then
+    Exit;
+
+  StartAt := 1;
+  for i := 1 to Length(Raw) + 1 do
+    if (i > Length(Raw)) or (Raw[i] = PathSeparator) then
+    begin
+      Part := Copy(Raw, StartAt, i - StartAt);
+      if Part <> '' then
+      begin
+        AParameters.Add('-Fu' + Part);
+        AParameters.Add('-Fi' + Part);
+      end;
+      StartAt := i + 1;
+    end;
+end;
+
+function NativePath(const APath: string): string;
+begin
+  Result := APath;
+  {$IFDEF MSWINDOWS}
+  Result := StringReplace(Result, '/', DirectorySeparator, [rfReplaceAll]);
+  {$ENDIF}
+end;
 
 { ===========================================================================
   TOML helpers — manifest + lockfile readers used to drive their
@@ -540,6 +600,14 @@ begin
         and (Copy(AHaystack, 1, Length(ANeedle)) = ANeedle);
 end;
 
+function LooksLikeWindowsAbsolutePath(const S: string): Boolean; inline;
+begin
+  Result := (Length(S) >= 3)
+        and (S[1] in ['a'..'z', 'A'..'Z'])
+        and (S[2] = ':')
+        and ((S[3] = '/') or (S[3] = '\'));
+end;
+
 function LooksLikeOwnerRepo(const S: string): Boolean;
 var i, Slashes: Integer;
 begin
@@ -578,7 +646,8 @@ begin
   if StartsWithStr(ASource, './')
      or StartsWithStr(ASource, '../')
      or StartsWithStr(ASource, '/')
-     or StartsWithStr(ASource, '~/') then
+     or StartsWithStr(ASource, '~/')
+     or LooksLikeWindowsAbsolutePath(ASource) then
   begin
     AKind := skLocal; ALocator := ASource; Exit;
   end;
@@ -2454,16 +2523,101 @@ begin
 end;
 {$ELSE}
 constructor TInstallLock.Create(const APath: string);
+const
+  LOCKFILE_EXCLUSIVE_LOCK_LWPT = $00000002;
+  LOCKFILE_FAIL_IMMEDIATELY_LWPT = $00000001;
+  LOCKFILE_LOCK_OFFSET_LWPT = 1024;
+var
+  Holder, DstDir: string;
+  SL: TStringList;
+  PidLine: AnsiString;
+  BytesWritten: DWORD;
+  LastErr: DWORD;
+  Ov: TOverlapped;
 begin
   FPath := APath;
-  { Windows path lands in a later cycle. For now: no-op. Concurrency control on
-    Windows v1 is "convention only" — a second concurrent install
-    could overwrite the first's work. CI on Windows will adopt
-    LockFileEx and turn this into a real lock. }
+  FHandle := THandle(Windows.INVALID_HANDLE_VALUE);
+  DstDir := ExtractFileDir(APath);
+  if DstDir <> '' then ForceDirectories(DstDir);
+
+  FHandle := Windows.CreateFileW(PWideChar(UnicodeString(APath)),
+    Windows.GENERIC_READ or Windows.GENERIC_WRITE,
+    Windows.FILE_SHARE_READ or Windows.FILE_SHARE_WRITE
+      or Windows.FILE_SHARE_DELETE, nil, Windows.CREATE_NEW,
+    Windows.FILE_ATTRIBUTE_NORMAL, 0);
+  if FHandle = THandle(Windows.INVALID_HANDLE_VALUE) then
+  begin
+    LastErr := Windows.GetLastError;
+    if (LastErr <> Windows.ERROR_FILE_EXISTS)
+      and (LastErr <> Windows.ERROR_ALREADY_EXISTS) then
+      raise ELWPTError.CreateFmt(
+        'failed to create install lock %s: %s (code %d)',
+        [APath, SysErrorMessage(LastErr), LastErr]);
+
+    Holder := 'unknown';
+    if FileExists(APath) then
+    begin
+      SL := TStringList.Create;
+      try
+        SL.LoadFromFile(APath);
+        if SL.Count > 0 then Holder := Trim(SL[0]);
+      finally
+        SL.Free;
+      end;
+    end;
+    raise EConcurrencyError.CreateFmt(
+      'another ' + PROGRAM_NAME
+      + ' install is in progress (lock holder PID: %s) — '
+      + 'or the previous install crashed without releasing the lock. '
+      + 'If you''re certain no other process is running, '
+      + 'run `' + PROGRAM_NAME + ' repair` to clear the stale lock.',
+      [Holder]);
+  end;
+
+  PidLine := AnsiString(IntToStr(GetProcessID)) + AnsiChar(#10);
+  if Length(PidLine) > 0 then
+    Windows.WriteFile(FHandle, PidLine[1], Length(PidLine),
+      BytesWritten, nil);
+  Windows.CloseHandle(FHandle);
+  FHandle := Windows.CreateFileW(PWideChar(UnicodeString(APath)),
+    Windows.GENERIC_READ,
+    Windows.FILE_SHARE_READ or Windows.FILE_SHARE_WRITE
+      or Windows.FILE_SHARE_DELETE, nil, Windows.OPEN_EXISTING,
+    Windows.FILE_ATTRIBUTE_NORMAL, 0);
+  if FHandle = THandle(Windows.INVALID_HANDLE_VALUE) then
+    raise EConcurrencyError.CreateFmt(
+      'failed to reopen %s after creating the install lock', [APath]);
+
+  FillChar(Ov, SizeOf(Ov), 0);
+  Ov.Offset := LOCKFILE_LOCK_OFFSET_LWPT;
+  if not Windows.LockFileEx(FHandle,
+    LOCKFILE_EXCLUSIVE_LOCK_LWPT or LOCKFILE_FAIL_IMMEDIATELY_LWPT,
+    0, 1, 0, Ov) then
+  begin
+    Windows.CloseHandle(FHandle);
+    FHandle := THandle(Windows.INVALID_HANDLE_VALUE);
+    DeleteFile(FPath);
+    raise EConcurrencyError.Create(
+      'another ' + PROGRAM_NAME
+      + ' install is in progress. Try again when it finishes.');
+  end;
 end;
 
 destructor TInstallLock.Destroy;
+const
+  LOCKFILE_LOCK_OFFSET_LWPT = 1024;
+var
+  Ov: TOverlapped;
 begin
+  if FHandle <> THandle(Windows.INVALID_HANDLE_VALUE) then
+  begin
+    FillChar(Ov, SizeOf(Ov), 0);
+    Ov.Offset := LOCKFILE_LOCK_OFFSET_LWPT;
+    Windows.UnlockFileEx(FHandle, 0, 1, 0, Ov);
+    Windows.CloseHandle(FHandle);
+    FHandle := THandle(Windows.INVALID_HANDLE_VALUE);
+    DeleteFile(FPath);
+  end;
   inherited Destroy;
 end;
 {$ENDIF}
@@ -2984,7 +3138,7 @@ begin
         Continue;
       end;
 
-      OutName := IncludeTrailingPathDelimiter(ADest) + RelName;
+      OutName := NativePath(IncludeTrailingPathDelimiter(ADest) + RelName);
 
       case Chr(TypeFlag) of
         '5':   { directory }
@@ -4057,6 +4211,7 @@ function TestBuildDir(const ASrcFile: string): string;
 var Sanitised: string;
 begin
   Sanitised := ChangeFileExt(ASrcFile, '');
+  Sanitised := StringReplace(Sanitised, ':', '_', [rfReplaceAll]);
   Sanitised := StringReplace(Sanitised, '/', '_', [rfReplaceAll]);
   Sanitised := StringReplace(Sanitised, '\', '_', [rfReplaceAll]);
   Result := 'build/tests/' + Sanitised;
@@ -4102,7 +4257,7 @@ begin
 
   P := TProcess.Create(nil);
   try
-    P.Executable := 'fpc';
+    P.Executable := FPCExecutable;
     (* Deliberately NOT forcing -M<mode>: each source sets its own mode
        via {$I Shared.inc} or an explicit {$mode delphi}{$H+} header.
        Forcing a mode here would conflict with future vendored test
@@ -4123,6 +4278,7 @@ begin
       additions stay for the AUnitPaths-driven callers (preserves
       backwards-compat with non-cfg-based invocations). }
     AddCfgParameters(CFG_FILE);
+    AddEnvUnitPathParameters(P.Parameters);
     for i := 0 to High(AUnitPaths) do
       if AUnitPaths[i] <> '' then
       begin
@@ -4160,8 +4316,11 @@ end;
   bypasses the skip. The other tiers (unit + integration) always run.
   See docs/testing.md for the policy table. }
 function IsE2ETestPath(const APath: string): Boolean; inline;
+var Normalised: string;
 begin
-  Result := Pos('tests/e2e/', APath) > 0;
+  Normalised := StringReplace(APath, '\', '/', [rfReplaceAll]);
+  Result := (Pos('/tests/e2e/', Normalised) > 0)
+         or (Pos('tests/e2e/', Normalised) = 1);
 end;
 
 function CmdTest(const AManifestPath: string; AIncludeE2E: Boolean): Integer;
@@ -4344,11 +4503,61 @@ begin
   Result := False;
 end;
 
+function RunPascalScript(const AHook: THook; out AError: string): Integer;
+var
+  P: TProcess;
+  j: Integer;
+  {$IFDEF MSWINDOWS}
+  Bin: string;
+  {$ENDIF}
+begin
+  AError := '';
+  {$IFDEF MSWINDOWS}
+  if not CompilePascal(AHook.Script, [], Bin) then
+  begin
+    AError := 'fpc failed to compile ' + AHook.Script;
+    Exit(1);
+  end;
+  if (not FileExists(Bin)) and FileExists(Bin + '.exe') then
+    Bin := Bin + '.exe';
+  Bin := NativePath(ExpandFileName(Bin));
+  {$ENDIF}
+
+  P := TProcess.Create(nil);
+  try
+    {$IFDEF MSWINDOWS}
+    P.Executable := Bin;
+    {$ELSE}
+    P.Executable := InstantFPCExecutable;
+    P.Parameters.Add(AHook.Script);
+    {$ENDIF}
+    for j := 0 to High(AHook.Args) do
+      P.Parameters.Add(AHook.Args[j]);
+    P.Options := [poWaitOnExit];
+    try
+      P.Execute;
+    except
+      on E: Exception do
+      begin
+        {$IFDEF MSWINDOWS}
+        AError := 'compiled script unavailable (' + E.Message + ')';
+        {$ELSE}
+        AError := 'instantfpc unavailable (' + E.Message + ')';
+        {$ENDIF}
+        Exit(127);
+      end;
+    end;
+    Result := P.ExitStatus;
+  finally
+    P.Free;
+  end;
+end;
+
 procedure RunHooks(const APhase: string; const AHooks: THookArray);
 var
-  i, j, Code: Integer;
-  P: TProcess;
+  i, Code: Integer;
   H: THook;
+  ScriptError: string;
 begin
   if Length(AHooks) = 0 then Exit;
   for i := 0 to High(AHooks) do
@@ -4367,33 +4576,15 @@ begin
       raise EManifestError.CreateFmt(
         '[%s] %s: script not found at %s', [APhase, H.Name, H.Script]);
 
-    P := TProcess.Create(nil);
-    try
-      P.Executable := 'instantfpc';
-      P.Parameters.Add(H.Script);
-      for j := 0 to High(H.Args) do
-        P.Parameters.Add(H.Args[j]);
-      { Inherit env + cwd from the lwpt process — Working='' means
-        "use the caller's cwd". Stdout/stderr pass through to the
-        terminal so the user sees what the hook printed. }
-      P.Options := [poWaitOnExit];
-      try
-        P.Execute;
-      except
-        on E: Exception do
-          raise ELWPTError.CreateFmt(
-            'instantfpc unavailable while running [%s] %s (%s). '
-            + 'Install InstantFPC (bundled with FPC) or run %s by hand.',
-            [APhase, H.Name, E.Message, H.Script]);
-      end;
-      Code := P.ExitStatus;
-    finally
-      P.Free;
-    end;
+    Code := RunPascalScript(H, ScriptError);
+    if ScriptError <> '' then
+      raise ELWPTError.CreateFmt(
+        '[%s] %s: %s while running %s',
+        [APhase, H.Name, ScriptError, H.Script]);
 
     if Code <> 0 then
       raise ELWPTError.CreateFmt(
-        '[%s] %s: instantfpc exited %d while running %s',
+        '[%s] %s: script exited %d while running %s',
         [APhase, H.Name, Code, H.Script]);
   end;
 end;
@@ -4456,7 +4647,7 @@ begin
 
   P := TProcess.Create(nil);
   try
-    P.Executable := 'fpc';
+    P.Executable := FPCExecutable;
     { cross-compile target CPU via env var, same hook as build.pas }
     Arch := GetEnvironmentVariable('FPC_TARGET_CPU');
     if Arch <> '' then P.Parameters.Add('-P' + Arch);
@@ -4467,6 +4658,7 @@ begin
       almost always be present). }
     if FileExists(ResolveCfgFile(AMan)) then
       P.Parameters.Add('@' + ResolveCfgFile(AMan));
+    AddEnvUnitPathParameters(P.Parameters);
     { manifest's own unit dirs — both as unit (-Fu) and include
       (-Fi) search paths. .inc files conventionally live next to
       .pas units, so the same dir serves both. }
@@ -5043,7 +5235,8 @@ begin
   SetLength(Wanted, 3);
   Wanted[0] := '.lwpt/tmp/';
   Wanted[1] := '.lwpt/install.lock';
-  Wanted[2] := IncludeTrailingPathDelimiter(ABuildDir);
+  Wanted[2] := StringReplace(IncludeTrailingPathDelimiter(ABuildDir),
+    DirectorySeparator, '/', [rfReplaceAll]);
   Existed := FileExists(APath);
   SL := TStringList.Create;
   try
@@ -5249,8 +5442,7 @@ end;
 
 function RunUserScript(const AHook: THook): Integer;
 var
-  P: TProcess;
-  j: Integer;
+  ScriptError: string;
 begin
   if not FileExists(AHook.Script) then
   begin
@@ -5258,27 +5450,11 @@ begin
       AHook.Script);
     Exit(127);
   end;
-  P := TProcess.Create(nil);
-  try
-    P.Executable := 'instantfpc';
-    P.Parameters.Add(AHook.Script);
-    for j := 0 to High(AHook.Args) do
-      P.Parameters.Add(AHook.Args[j]);
-    P.Options := [poWaitOnExit];
-    try
-      P.Execute;
-    except
-      on E: Exception do
-      begin
-        WriteLn(ErrOutput, PROGRAM_NAME, ' run: instantfpc unavailable (',
-          E.Message, '). Install InstantFPC (bundled with FPC) or run ',
-          AHook.Script, ' by hand.');
-        Exit(127);
-      end;
-    end;
-    Result := P.ExitStatus;
-  finally
-    P.Free;
+  Result := RunPascalScript(AHook, ScriptError);
+  if ScriptError <> '' then
+  begin
+    WriteLn(ErrOutput, PROGRAM_NAME, ' run: ', ScriptError, '.');
+    if Result = 0 then Result := 1;
   end;
 end;
 

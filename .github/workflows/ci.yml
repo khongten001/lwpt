@@ -133,20 +133,76 @@ jobs:
 
           # RTL + package paths per target.
           RTL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl"
+          RTL_EXTRA_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-extra"
           OBJPAS_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-objpas"
           GEN_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/rtl-generics"
           FCL_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/fcl-process"
+          PASZLIB_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/paszlib"
+          HASH_DIR="$PREFIX/lib/fpc/${FPC_VERSION}/units/${TARGET}/hash"
           FCL_BASE_SRC="$PREFIX/share/fpcsrc/packages/fcl-base/src"
           FCL_NET_SRC="$PREFIX/share/fpcsrc/packages/fcl-net/src"
           OPENSSL_SRC="$PREFIX/share/fpcsrc/packages/openssl/src"
+          HASH_FLAGS=""
+          if [ -d "$HASH_DIR" ]; then
+            HASH_FLAGS="-Fu${HASH_DIR}"
+            echo "hash units: $(find "$HASH_DIR" -maxdepth 1 -name '*.ppu' | wc -l | tr -d ' ') .ppu files"
+          fi
+          RTL_EXTRA_FLAGS=""
+          if [ -d "$RTL_EXTRA_DIR" ]; then
+            RTL_EXTRA_FLAGS="-Fu${RTL_EXTRA_DIR}"
+            echo "rtl-extra units: $(find "$RTL_EXTRA_DIR" -maxdepth 1 -name '*.ppu' | wc -l | tr -d ' ') .ppu files"
+          fi
+
+          require_dir() {
+            local dir="$1"
+            if [ ! -d "$dir" ]; then
+              echo "::error::Missing directory for ${TARGET}: ${dir}"
+              exit 1
+            fi
+          }
+
+          require_unit() {
+            local dir="$1"
+            local unit="$2"
+            if [ ! -f "$dir/${unit}.ppu" ]; then
+              echo "::error::Missing ${unit}.ppu in ${dir} for ${TARGET}"
+              exit 1
+            fi
+          }
 
           echo "RTL units: $(ls "$RTL_DIR"/*.ppu 2>/dev/null | wc -l) .ppu files"
-          test -d "$OBJPAS_DIR"
-          test -d "$GEN_DIR"
-          test -d "$FCL_DIR"
-          test -d "$FCL_BASE_SRC"
-          test -d "$FCL_NET_SRC"
-          test -d "$OPENSSL_SRC"
+          require_dir "$OBJPAS_DIR"
+          require_dir "$GEN_DIR"
+          require_dir "$FCL_DIR"
+          require_dir "$PASZLIB_DIR"
+          require_dir "$FCL_BASE_SRC"
+          require_dir "$FCL_NET_SRC"
+          require_dir "$OPENSSL_SRC"
+          PASZLIB_COUNT="$(find "$PASZLIB_DIR" -maxdepth 1 -name '*.ppu' | wc -l | tr -d ' ')"
+          echo "paszlib units: ${PASZLIB_COUNT} .ppu files"
+          for unit in strutils dateutils variants; do
+            require_unit "$OBJPAS_DIR" "$unit"
+          done
+          for unit in generics.collections generics.defaults; do
+            require_unit "$GEN_DIR" "$unit"
+          done
+          for unit in process pipes; do
+            require_unit "$FCL_DIR" "$unit"
+          done
+          require_unit "$PASZLIB_DIR" zstream
+          if [ ! -f "$PASZLIB_DIR/crc.ppu" ] && [ ! -f "$HASH_DIR/crc.ppu" ]; then
+            echo "::error::Missing crc.ppu in paszlib/hash unit dirs for ${TARGET}"
+            exit 1
+          fi
+          case "$OS" in
+            win32|win64) require_unit "$RTL_DIR" winsock2 ;;
+            *)
+              if [ ! -f "$RTL_DIR/sockets.ppu" ] && [ ! -f "$RTL_EXTRA_DIR/sockets.ppu" ]; then
+                echo "::error::Missing sockets.ppu in rtl/rtl-extra unit dirs for ${TARGET}"
+                exit 1
+              fi
+              ;;
+          esac
 
           mkdir -p build/compiled
 
@@ -163,7 +219,7 @@ jobs:
             -Fupackages/semver/source     -Fipackages/semver/source \
             -Fupackages/toml/source       -Fipackages/toml/source \
             -Fupackages/testing/source    -Fipackages/testing/source \
-            -Fu"$RTL_DIR" -Fu"$OBJPAS_DIR" -Fu"$GEN_DIR" -Fu"$FCL_DIR" \
+            -Fu"$RTL_DIR" $RTL_EXTRA_FLAGS -Fu"$OBJPAS_DIR" -Fu"$GEN_DIR" -Fu"$FCL_DIR" -Fu"$PASZLIB_DIR" $HASH_FLAGS \
             -Fu"$FCL_BASE_SRC" -Fu"$FCL_NET_SRC" -Fu"$OPENSSL_SRC" \
             -FU"build/compiled" -FE"build" \
             $EXTRA_FLAGS \
@@ -251,11 +307,40 @@ jobs:
         if: matrix.fpc-install == 'choco'
         run: |
           choco install -y freepascal
-          # Add the FPC bin to PATH for subsequent steps. Chocolatey
-          # installs to a versioned dir under C:\fpc — find it.
-          FPC_BIN=$(find /c/fpc -name fpc.exe -type f 2>/dev/null | head -1)
+          # Add the FPC bin to PATH for subsequent steps. Chocolatey has
+          # used both C:\fpc and C:\tools\freepascal layouts over time.
+          FPC_BIN=""
+          for candidate_root in /c/tools/freepascal /c/fpc; do
+            if [ -d "$candidate_root" ]; then
+              FPC_BIN=$(find "$candidate_root" -name fpc.exe -type f 2>/dev/null | head -1)
+              if [ -n "$FPC_BIN" ]; then break; fi
+            fi
+          done
           if [ -z "$FPC_BIN" ]; then echo "::error::Chocolatey FPC install: fpc.exe not found"; exit 1; fi
+          echo "Using FPC at $FPC_BIN"
           echo "$(dirname "$FPC_BIN")" >> "$GITHUB_PATH"
+          echo "LWPT_FPC=$(cygpath -w "$FPC_BIN")" >> "$GITHUB_ENV"
+          INSTANTFPC_BIN=$(find "$(dirname "$FPC_BIN")" -name instantfpc.exe -type f 2>/dev/null | head -1)
+          if [ -n "$INSTANTFPC_BIN" ]; then
+            echo "LWPT_INSTANTFPC=$(cygpath -w "$INSTANTFPC_BIN")" >> "$GITHUB_ENV"
+          fi
+          FPC_UNIT_PATHS=""
+          for unit_dir in rtl rtl-objpas rtl-generics rtl-extra fcl-base fcl-process paszlib hash; do
+            UNIT_PATH=""
+            for unit_target in i386-win32 x86_64-win64; do
+              UNIT_PATH=$(find /c/tools/freepascal /c/fpc -path "*/units/${unit_target}/${unit_dir}" -type d 2>/dev/null | head -1 || true)
+              if [ -n "$UNIT_PATH" ]; then break; fi
+            done
+            if [ -n "$UNIT_PATH" ]; then
+              UNIT_PATH_WIN=$(cygpath -w "$UNIT_PATH")
+              if [ -z "$FPC_UNIT_PATHS" ]; then
+                FPC_UNIT_PATHS="$UNIT_PATH_WIN"
+              else
+                FPC_UNIT_PATHS="${FPC_UNIT_PATHS};${UNIT_PATH_WIN}"
+              fi
+            fi
+          done
+          echo "LWPT_FPC_UNIT_PATHS=$FPC_UNIT_PATHS" >> "$GITHUB_ENV"
 
       - name: Download lwpt artefact
         uses: actions/download-artifact@v8

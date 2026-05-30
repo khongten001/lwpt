@@ -186,7 +186,7 @@ begin
     behaviour against regression. }
   R := RunLwpt(['build', 'hello', '--mode', 'release'], FScratch);
   Expect<Integer>(R.ExitCode).ToBe(0);
-  Expect<Boolean>(FileExists(FScratch + '/build/hello')).ToBe(True);
+  Expect<Boolean>(FileExists(ExpectedExe(FScratch + '/build/hello'))).ToBe(True);
 end;
 
 procedure TCLIOptionsE2E.TestBuildModeEqualsSeparatedValueParses;
@@ -197,7 +197,7 @@ begin
     is a parser regression. }
   R := RunLwpt(['build', 'hello', '--mode=release'], FScratch);
   Expect<Integer>(R.ExitCode).ToBe(0);
-  Expect<Boolean>(FileExists(FScratch + '/build/hello')).ToBe(True);
+  Expect<Boolean>(FileExists(ExpectedExe(FScratch + '/build/hello'))).ToBe(True);
 end;
 
 procedure TCLIOptionsE2E.TestBuildModeInvalidValueExitsNonZero;

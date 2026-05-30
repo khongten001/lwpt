@@ -187,7 +187,7 @@ begin
     WriteLn('--- build stderr ---'#10, R.Stderr, #10'---');
   Expect<Integer>(R.ExitCode).ToBe(0);
   Exe := FScratch + '/build/my-project';
-  Expect<Boolean>(FileExists(Exe)).ToBe(True);
+  Expect<Boolean>(FileExists(ExpectedExe(Exe))).ToBe(True);
 end;
 
 procedure TInitCommand.TestSecondInitWithoutForceRejects;
