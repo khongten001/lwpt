@@ -40,17 +40,17 @@ To check availability, look for a skill or command named `resolve-reviews` (e.g.
 
 1. Confirm the current branch has an open PR:
 
-```bash
-gh pr view --json url,number,title,reviewDecision
-```
+   ```bash
+   gh pr view --json url,number,title,reviewDecision
+   ```
 
 2. Merge the remote default baseline if the branch is behind:
 
-```bash
-BASE_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
-git fetch origin "$BASE_BRANCH"
-git merge "origin/$BASE_BRANCH" --no-edit
-```
+   ```bash
+   BASE_BRANCH=$(gh repo view --json defaultBranchRef --jq '.defaultBranchRef.name')
+   git fetch origin "$BASE_BRANCH"
+   git merge "origin/$BASE_BRANCH" --no-edit
+   ```
 
    Resolve conflicts and commit the merge before addressing reviews.
 

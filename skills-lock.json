@@ -5,13 +5,13 @@
       "source": "frostney/known-good-route",
       "sourceType": "github",
       "skillPath": "create-issue/SKILL.md",
-      "computedHash": "c9f9e18c500ca8dc6e2345e5cdcd83567fd31d66f6537ea46421eeaecdd786f2"
+      "computedHash": "327eb529723ac979773cc31e1d7cd411c31ddece715f6299009fcb543568111b"
     },
     "create-pr": {
       "source": "frostney/known-good-route",
       "sourceType": "github",
       "skillPath": "create-pr/SKILL.md",
-      "computedHash": "acb51b600a8eae5588fbf73814c696db2487e1bdb113a87461626c9651da76a3"
+      "computedHash": "f1492d9b535190e046327563ef8f391d51bea7d30c610cd504d1aac2996ec0ee"
     },
     "git-workflow": {
       "source": "frostney/known-good-route",
@@ -29,7 +29,7 @@
       "source": "frostney/known-good-route",
       "sourceType": "github",
       "skillPath": "implement-issue/SKILL.md",
-      "computedHash": "ee4d50ead86c06b88f0e6f469a28b3533ffc08f68add0fb74d6414e391650648"
+      "computedHash": "51927cbc8b1b4768c63c2803e969502f4125acfb92517660ad41aef8555074aa"
     },
     "improve-codebase-architecture": {
       "source": "mattpocock/skills",
@@ -53,13 +53,13 @@
       "source": "frostney/known-good-route",
       "sourceType": "github",
       "skillPath": "review-pr/SKILL.md",
-      "computedHash": "b3e76b6320dcba295515d9541bd90eead92985aec5f6c1be34351bc7191d859c"
+      "computedHash": "7e7f3768689d5ab488e3b56c8ca204e4af4d0a967cbda933cb451ff091a699f3"
     },
     "update-pr": {
       "source": "frostney/known-good-route",
       "sourceType": "github",
       "skillPath": "update-pr/SKILL.md",
-      "computedHash": "9b7e92b64d7158a8549765c7462a046290a5ffda7f8e4e6e193c11fa41f75689"
+      "computedHash": "ba8aaa2b169742cdb89ecf3e7b16b3f7fc49acea01fc0b2581193350c1e81b77"
     }
   }
 }

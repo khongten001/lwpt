@@ -81,38 +81,38 @@ If you cannot run the grill skill, do not silently downgrade it to "doc-grounded
 8. Show the title, labels, and body to the user before creating, unless the user asked to create without review.
 9. Resolve the repository ID, then create the issue with GraphQL:
 
-```bash
-REPOSITORY_ID=$(gh api graphql \
-  -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}' \
-  -f owner="$OWNER" -f name="$REPO" --jq '.data.repository.id')
+   ```bash
+   REPOSITORY_ID=$(gh api graphql \
+     -f query='query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id}}' \
+     -f owner="$OWNER" -f name="$REPO" --jq '.data.repository.id')
 
-gh api graphql \
-  -f query='mutation($repositoryId:ID!, $title:String!, $body:String!, $labelIds:[ID!]) {
-    createIssue(input: {
-      repositoryId: $repositoryId,
-      title: $title,
-      body: $body,
-      labelIds: $labelIds
-    }) {
-      issue { url number }
-    }
-  }' \
-  -F repositoryId="$REPOSITORY_ID" \
-  -f title="$ISSUE_TITLE" \
-  -f body="$ISSUE_BODY"
-```
+   gh api graphql \
+     -f query='mutation($repositoryId:ID!, $title:String!, $body:String!, $labelIds:[ID!]) {
+       createIssue(input: {
+         repositoryId: $repositoryId,
+         title: $title,
+         body: $body,
+         labelIds: $labelIds
+       }) {
+         issue { url number }
+       }
+     }' \
+     -F repositoryId="$REPOSITORY_ID" \
+     -f title="$ISSUE_TITLE" \
+     -f body="$ISSUE_BODY"
+   ```
 
-When labels were selected, append one `-F labelIds[]="$LABEL_ID"` argument per label ID.
+   When labels were selected, append one `-F labelIds[]="$LABEL_ID"` argument per label ID.
 
 10. If GraphQL is rate-limited or unavailable, fall back to REST:
 
-```bash
-gh api "repos/$OWNER/$REPO/issues" \
-  -f title="$ISSUE_TITLE" \
-  -f body="$ISSUE_BODY" \
-  --jq '.html_url'
-```
+    ```bash
+    gh api "repos/$OWNER/$REPO/issues" \
+      -f title="$ISSUE_TITLE" \
+      -f body="$ISSUE_BODY" \
+      --jq '.html_url'
+    ```
 
-When labels were selected, append one `-f labels[]="$LABEL_NAME"` argument per label name.
+    When labels were selected, append one `-f labels[]="$LABEL_NAME"` argument per label name.
 
 11. Return the issue URL.

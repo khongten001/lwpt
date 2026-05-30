@@ -65,9 +65,9 @@ If you cannot run the grill skill, do not silently downgrade it to "doc-grounded
 2. Fetch the issue with GraphQL first: title, body, state, labels, assignees, URL, comments, and whether the entity is actually a pull request.
 3. Fall back to REST when GraphQL is unavailable:
 
-```bash
-gh api "repos/$OWNER/$REPO/issues/$ISSUE_NUMBER"
-```
+   ```bash
+   gh api "repos/$OWNER/$REPO/issues/$ISSUE_NUMBER"
+   ```
 
 4. **Read the project's agent context before forming a hypothesis or editing.** In this order:
    - The **root** `AGENTS.md` (and `CLAUDE.md` if present — usually an alias).
@@ -118,16 +118,16 @@ gh api "repos/$OWNER/$REPO/issues/$ISSUE_NUMBER"
     - Attach before/after media and accessibility notes to the PR description so reviewers can evaluate without re-running the app.
 14. **Run the project's full verification gate before invoking `/create-pr`.** Prefer the project's aggregator script when it exists (e.g. `bun run check`) — that's the canonical "ready to commit" signal. Otherwise run the per-step gate explicitly:
 
-```bash
-bun install --frozen-lockfile
-bun run format:check   # or biome check
-bun run lint           # or biome lint .
-bun test
-bun run typecheck      # or tsc --noEmit / bunx tsc --noEmit
-bun run build
-```
+    ```bash
+    bun install --frozen-lockfile
+    bun run format:check   # or biome check
+    bun run lint           # or biome lint .
+    bun test
+    bun run typecheck      # or tsc --noEmit / bunx tsc --noEmit
+    bun run build
+    ```
 
-Do not skip steps because they "should pass." If any step fails, fix the cause; do not invoke `/create-pr` with a red gate.
+    Do not skip steps because they "should pass." If any step fails, fix the cause; do not invoke `/create-pr` with a red gate.
 
 15. **Review the implementation before handoff (do not skip).** After the gate is green but before `/create-pr`, audit your own change critically — as a reviewer who did not write it would:
     - **Matches the issue.** The change satisfies the original issue's intent, description, and acceptance criteria. The exception: when the scope was deliberately changed across later turns or grill sessions, match that updated intent instead — and note the divergence from the original issue text in the PR description so reviewers understand why.
