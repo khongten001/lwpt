@@ -11,6 +11,7 @@
   "config": {
     "MD013": false,   // line-length — our docs intentionally have long sentences
     "MD024": false,   // no-duplicate-heading — ADRs repeat "Considered Options" + "Consequences"
+    "MD029": false,   // ordered-list-item-prefix — allow lazy/manual ordered-list numbering
     "MD033": false,   // no-inline-html — we use occasional <details> blocks
     "MD034": false,   // no-bare-urls — install scripts have legitimate bare https://... lines
     "MD041": false,   // first-line-must-be-h1 — ADRs start with their title which IS the H1, fine
