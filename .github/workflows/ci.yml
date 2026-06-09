@@ -22,8 +22,9 @@ name: CI
 #           compile at run time on the native runner (Q22=b).
 #
 #   test:   Per-platform native runners — install FPC via the
-#           platform's package manager, download the cross-built
-#           lwpt binary, then run the full pipeline:
+#           platform's package manager, run a Windows bootstrap smoke
+#           once, download the cross-built lwpt binary, then run the
+#           full pipeline:
 #             ./build/lwpt install
 #             ./build/lwpt format --check        (one runner is enough)
 #             ./build/lwpt test                  (default tier)
@@ -278,6 +279,7 @@ jobs:
           - target: x86_64-win64
             runner: windows-latest
             fpc-install: choco
+            bootstrap-check: true    # one Windows leg validates bootstrap.bat
           - target: i386-win32
             runner: windows-latest
             fpc-install: choco
@@ -341,6 +343,27 @@ jobs:
             fi
           done
           echo "LWPT_FPC_UNIT_PATHS=$FPC_UNIT_PATHS" >> "$GITHUB_ENV"
+
+      - name: bootstrap.bat (Windows cold build)
+        if: matrix.bootstrap-check == true
+        shell: cmd
+        run: |
+          rem Exercise bootstrap.bat's direct-fpc fallback path. This cmd
+          rem smoke runs outside the Git Bash setup context, so pass the
+          rem CI-discovered FPC unit paths through a temporary wrapper.
+          set "BOOTSTRAP_PATH=%RUNNER_TEMP%\lwpt-bootstrap-path"
+          if not exist "%BOOTSTRAP_PATH%" mkdir "%BOOTSTRAP_PATH%"
+          > "%BOOTSTRAP_PATH%\fpc.cmd" echo @echo off
+          >> "%BOOTSTRAP_PATH%\fpc.cmd" echo setlocal enabledelayedexpansion
+          >> "%BOOTSTRAP_PATH%\fpc.cmd" echo set "UNIT_ARGS="
+          >> "%BOOTSTRAP_PATH%\fpc.cmd" echo if defined LWPT_FPC_UNIT_PATHS for %%%%D in ("!LWPT_FPC_UNIT_PATHS:;=" "!") do set "UNIT_ARGS=!UNIT_ARGS! -Fu%%%%~D"
+          >> "%BOOTSTRAP_PATH%\fpc.cmd" echo "%LWPT_FPC%" !UNIT_ARGS! %%*
+          set "PATH=%BOOTSTRAP_PATH%;%PATH%"
+          call bootstrap.bat
+          if errorlevel 1 exit /b %errorlevel%
+          build\lwpt.exe --help
+          if errorlevel 1 exit /b %errorlevel%
+          rmdir /s /q build
 
       - name: Download lwpt artefact
         uses: actions/download-artifact@v8
