@@ -38,7 +38,6 @@ type
     FInstallExitCode: Integer;
     FInstallStdout: string;
     FInstallStderr: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -63,29 +62,14 @@ begin
   end;
 end;
 
-procedure TLWPTInstallDirectArchivesWindowsE2E.WriteFile(const APath,
-  AContent: string);
-var
-  SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
-
 procedure TLWPTInstallDirectArchivesWindowsE2E.SetupScratchProject;
 begin
   ForceDirectories(FRoot + '/source');
-  WriteFile(FRoot + '/source/main.pas',
+  WriteTextFile(FRoot + '/source/main.pas',
     'program main;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'begin end.'#10);
-  WriteFile(FRoot + '/lwpt.toml',
+  WriteTextFile(FRoot + '/lwpt.toml',
     '[package]'#10 +
     'name = "direct-archives-windows-e2e"'#10 +
     'version = "0.0.0"'#10 +

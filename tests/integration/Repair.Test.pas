@@ -31,7 +31,6 @@ type
   TRepairE2E = class(TTestSuite)
   private
     FOrigDir, FScratch: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -43,30 +42,17 @@ type
     procedure TestRepairCleansTmpButLeavesCommittedState;
   end;
 
-procedure TRepairE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
-
 procedure TRepairE2E.SetupScratchProject;
 begin
   ForceDirectories(FScratch + '/source');
 
-  WriteFile(FScratch + '/lwpt.toml',
+  WriteTextFile(FScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "repair-e2e"'#10 +
     'version = "0.0.0"'#10 +
     'units = ["source"]'#10);
 
-  WriteFile(FScratch + '/source/dummy.pas',
+  WriteTextFile(FScratch + '/source/dummy.pas',
     'unit Dummy;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'interface'#10 +
@@ -109,7 +95,7 @@ begin
 
   { Simulate a crashed install: leave a stale lock file with a fake PID. }
   ForceDirectories(FScratch + '/.lwpt');
-  WriteFile(LockPath, '99999');
+  WriteTextFile(LockPath, '99999');
   Expect<Boolean>(FileExists(LockPath)).ToBe(True);
 
   R := RunLwpt(['repair'], FScratch);
@@ -128,12 +114,12 @@ begin
   { Simulate a crash: a stray file under .lwpt/tmp/ (the atomic-write
     staging area an in-progress install would have created). }
   ForceDirectories(FScratch + '/.lwpt/tmp');
-  WriteFile(TmpOrphan, 'fake archive data');
+  WriteTextFile(TmpOrphan, 'fake archive data');
   Expect<Boolean>(FileExists(TmpOrphan)).ToBe(True);
 
   { A committed marker under .lwpt/modules/ — must survive repair. }
   ForceDirectories(FScratch + '/.lwpt/modules');
-  WriteFile(ModulesMarker, 'committed state, must survive');
+  WriteTextFile(ModulesMarker, 'committed state, must survive');
   Expect<Boolean>(FileExists(ModulesMarker)).ToBe(True);
 
   R := RunLwpt(['repair'], FScratch);

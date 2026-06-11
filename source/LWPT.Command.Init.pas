@@ -18,7 +18,8 @@ uses
   CLI.Prompts,
   LWPT.Command.Build,
   LWPT.Command.Install,
-  LWPT.Core;
+  LWPT.Core,
+  LWPT.Manifest;
 
 {
   CmdInit (ADR-0010) — scaffold a new LWPT project. Interactive by
@@ -138,17 +139,9 @@ begin
   end;
 end;
 
-function ValidPackageName(const S: string): Boolean;
-var i: Integer;
-begin
-  Result := False;
-  if S = '' then Exit;
-  for i := 1 to Length(S) do
-    if not ((S[i] in ['a'..'z']) or (S[i] in ['A'..'Z'])
-            or (S[i] in ['0'..'9']) or (S[i] = '-') or (S[i] = '_')) then
-      Exit;
-  Result := True;
-end;
+{ ValidPackageName lives in LWPT.Manifest — the package-name grammar
+  shared with `lwpt add`'s name validation and the installer's
+  prune guard. }
 
 procedure CmdInit(AYes, AForce: Boolean);
 const

@@ -45,7 +45,6 @@ type
     FSkipped: Boolean;
     FInstallExitCode: Integer;
     FInstallStderr: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -57,19 +56,6 @@ type
     procedure TestLockfileRecordsArchiveAndTreeHashes;
     procedure TestFrozenVerifiesWithoutNetwork;
   end;
-
-procedure TInstallBitbucketE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
 
 function ReadFileText(const APath: string): string;
 var SL: TStringList;
@@ -86,11 +72,11 @@ end;
 procedure TInstallBitbucketE2E.SetupScratchProject;
 begin
   ForceDirectories(FRoot + '/source');
-  WriteFile(FRoot + '/source/main.pas',
+  WriteTextFile(FRoot + '/source/main.pas',
     'program main;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'begin end.'#10);
-  WriteFile(FRoot + '/lwpt.toml',
+  WriteTextFile(FRoot + '/lwpt.toml',
     '[package]'#10 +
     'name = "bitbucket-e2e"'#10 +
     'version = "0.0.0"'#10 +

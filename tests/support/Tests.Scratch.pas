@@ -7,12 +7,14 @@
   their single home, next to Tests.LwptSubprocess (the support dir is
   already on every test's compile path via LWPT.Command.Testing).
 
-  RecursiveDelete is symlink-aware: a symlink is unlinked, never
-  followed, so a link planted inside a scratch tree (e.g. by the
-  build --clean symlink regression test) cannot make the wipe escape
-  the tree or recurse forever. Windows directory symlinks/junctions
-  are not handled (DeleteFile cannot remove them) — no test creates
-  them there.
+  RecursiveDelete is link-aware: a symlink is unlinked and a Windows
+  directory symlink/junction is removed as a node (RemoveDir detaches
+  a junction without touching its target), never followed — so a link
+  planted inside a scratch tree (by the build --clean symlink
+  regression test, or by the installer's monorepo link path, which
+  puts junctions under a scratch project's .lwpt/modules/) cannot
+  make the wipe escape the tree, delete live package sources, or
+  recurse forever.
 
   A wipe that cannot complete raises, naming the path: a test that
   silently proceeds on a half-wiped scratch dir turns into stale-state
@@ -54,15 +56,37 @@ var
 begin
   if not DirectoryExists(APath) then Exit;
   Base := IncludeTrailingPathDelimiter(APath);
-  { faSymLink in the mask makes FindFirst report links as links; a
-    symlink-to-dir then carries faSymLink and is unlinked instead of
-    recursed into. }
+  { faSymLink in the mask makes FindFirst report links as links (the
+    same $400 bit is FILE_ATTRIBUTE_REPARSE_POINT on Windows, so
+    junctions carry it too); a link is removed as a node instead of
+    recursed into. The node-removal call is platform-split: a Unix
+    symlink (even one whose Attr also carries faDirectory from the
+    target) unlinks via DeleteFile — RemoveDir on a symlink is
+    ENOTDIR — while a Windows junction / directory reparse point is
+    the opposite: DeleteFile cannot remove it, RemoveDir detaches it
+    without touching the target. }
   if FindFirst(Base + '*', faAnyFile or faSymLink, SR) = 0 then
     try
       repeat
         if (SR.Name = '.') or (SR.Name = '..') then Continue;
-        if ((SR.Attr and faDirectory) <> 0)
-           and ((SR.Attr and faSymLink) = 0) then
+        if (SR.Attr and faSymLink) <> 0 then
+        begin
+          {$IFDEF MSWINDOWS}
+          if (SR.Attr and faDirectory) <> 0 then
+          begin
+            if not RemoveDir(Base + SR.Name) then
+              raise Exception.CreateFmt(
+                'RecursiveDelete: failed to remove dir link "%s": %s',
+                [Base + SR.Name, SysErrorMessage(GetLastOSError)]);
+          end
+          else
+          {$ENDIF}
+          if not DeleteFile(Base + SR.Name) then
+            raise Exception.CreateFmt(
+              'RecursiveDelete: failed to unlink "%s": %s',
+              [Base + SR.Name, SysErrorMessage(GetLastOSError)]);
+        end
+        else if (SR.Attr and faDirectory) <> 0 then
           RecursiveDelete(Base + SR.Name)
         else if not DeleteFile(Base + SR.Name) then
           raise Exception.CreateFmt(

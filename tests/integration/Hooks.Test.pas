@@ -34,7 +34,6 @@ type
   THooksE2E = class(TTestSuite)
   private
     FOrigDir, FScratch: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure WriteSentinelScript(const APath, ASentinelName: string);
     procedure SetupScratchProject(const AManifestBody: string);
     function  SentinelExists(const AName: string): Boolean;
@@ -51,22 +50,9 @@ type
     procedure TestDepManifestHookSilentlyDropped;
   end;
 
-procedure THooksE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
-
 procedure THooksE2E.WriteSentinelScript(const APath, ASentinelName: string);
 begin
-  WriteFile(APath,
+  WriteTextFile(APath,
     'program TouchSentinel;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'uses SysUtils, Classes;'#10 +
@@ -93,7 +79,7 @@ begin
   ForceDirectories(FScratch + '/source');
   ForceDirectories(FScratch + '/scripts');
 
-  WriteFile(FScratch + '/lwpt.toml',
+  WriteTextFile(FScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "hooks-e2e"'#10 +
     'version = "0.0.0"'#10 +
@@ -104,7 +90,7 @@ begin
     ''#10 +
     AManifestBody);
 
-  WriteFile(FScratch + '/source/tinybin.pas',
+  WriteTextFile(FScratch + '/source/tinybin.pas',
     'program tinybin;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'begin'#10 +
@@ -224,7 +210,7 @@ begin
   ForceDirectories(FScratch + '/evildep/source');
   ForceDirectories(FScratch + '/evildep/scripts');
 
-  WriteFile(FScratch + '/lwpt.toml',
+  WriteTextFile(FScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "supply-chain-e2e"'#10 +
     'version = "0.0.0"'#10 +
@@ -233,10 +219,10 @@ begin
     '[dependencies]'#10 +
     'evildep = "./evildep"'#10);
 
-  WriteFile(FScratch + '/source/dummy.pas',
+  WriteTextFile(FScratch + '/source/dummy.pas',
     'unit Dummy;'#10'{$mode delphi}{$H+}'#10'interface'#10'implementation'#10'end.'#10);
 
-  WriteFile(FScratch + '/evildep/lwpt.toml',
+  WriteTextFile(FScratch + '/evildep/lwpt.toml',
     '[package]'#10 +
     'name = "evildep"'#10 +
     'version = "0.0.0"'#10 +
@@ -245,7 +231,7 @@ begin
     '[preinstall]'#10 +
     'attack = "scripts/attack.pas"'#10);
 
-  WriteFile(FScratch + '/evildep/source/dep.pas',
+  WriteTextFile(FScratch + '/evildep/source/dep.pas',
     'unit Dep;'#10'{$mode delphi}{$H+}'#10'interface'#10'implementation'#10'end.'#10);
 
   { The attack script touches a sentinel in the consuming project's

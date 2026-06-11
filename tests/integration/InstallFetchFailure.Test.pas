@@ -33,7 +33,6 @@ type
   TInstallFetchFailureE2E = class(TTestSuite)
   private
     FOrigDir, FScratch, FRoot, FMissingDep: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -44,19 +43,6 @@ type
     procedure TestMissingLocalSourceMessageNamesTheDepAndPath;
     procedure TestMissingLocalSourceLeavesTmpEmpty;
   end;
-
-procedure TInstallFetchFailureE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
 
 function DirIsEmpty(const APath: string): Boolean;
 var R: TSearchRec;
@@ -80,7 +66,7 @@ begin
   ForceDirectories(FRoot + '/source');
   { Tiny program file so the manifest parses + units = ["source"]
     resolves to an existing directory. }
-  WriteFile(FRoot + '/source/main.pas',
+  WriteTextFile(FRoot + '/source/main.pas',
     'program main;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'begin'#10 +
@@ -90,7 +76,7 @@ begin
   { Manifest with one local-source dep pointing at a path that does
     not exist. lwpt install must fail with EFetchError naming the dep
     and the missing path. }
-  WriteFile(FRoot + '/lwpt.toml',
+  WriteTextFile(FRoot + '/lwpt.toml',
     '[package]'#10 +
     'name = "fetch-failure-e2e"'#10 +
     'version = "0.0.0"'#10 +

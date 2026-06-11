@@ -32,8 +32,8 @@ uses
   SysUtils,
 
   TestingPascalLibrary,
-  Tests.LwptSubprocess,
-  Tests.Scratch;
+  Tests.Scratch,
+  Tests.LwptSubprocess;
 
 type
   TBuildMultiTarget = class(TTestSuite)

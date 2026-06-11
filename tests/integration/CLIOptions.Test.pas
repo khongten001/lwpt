@@ -43,7 +43,6 @@ type
   TCLIOptionsE2E = class(TTestSuite)
   private
     FOrigDir, FScratch: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -58,24 +57,11 @@ type
     procedure TestBuildModeInvalidValueExitsNonZero;
   end;
 
-procedure TCLIOptionsE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
-
 procedure TCLIOptionsE2E.SetupScratchProject;
 begin
   ForceDirectories(FScratch + '/source');
 
-  WriteFile(FScratch + '/lwpt.toml',
+  WriteTextFile(FScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "cli-e2e"'#10 +
     'version = "0.0.0"'#10 +
@@ -85,7 +71,7 @@ begin
     'source = "source/hello.pas"'#10 +
     'output = "build/hello"'#10);
 
-  WriteFile(FScratch + '/source/hello.pas',
+  WriteTextFile(FScratch + '/source/hello.pas',
     'program hello;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'begin'#10 +

@@ -33,7 +33,6 @@ type
   TRunE2E = class(TTestSuite)
   private
     FOrigDir, FScratch: string;
-    procedure WriteFile(const APath, AContent: string);
     procedure SetupScratchProject;
   protected
     procedure BeforeAll; override;
@@ -48,24 +47,11 @@ type
     procedure TestUnknownNameExitsNonZero;
   end;
 
-procedure TRunE2E.WriteFile(const APath, AContent: string);
-var SL: TStringList;
-begin
-  ForceDirectories(ExtractFileDir(APath));
-  SL := TStringList.Create;
-  try
-    SL.Text := AContent;
-    SL.SaveToFile(APath);
-  finally
-    SL.Free;
-  end;
-end;
-
 procedure TRunE2E.SetupScratchProject;
 begin
   ForceDirectories(FScratch + '/scripts');
 
-  WriteFile(FScratch + '/lwpt.toml',
+  WriteTextFile(FScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "run-e2e"'#10 +
     'version = "0.0.0"'#10 +
@@ -77,7 +63,7 @@ begin
   { InstantFPC script: writes a sentinel marker + exits 7. The test
     asserts on both. The marker proves the script ran; the exit code
     proves `lwpt run` propagates it. }
-  WriteFile(FScratch + '/scripts/hello.pas',
+  WriteTextFile(FScratch + '/scripts/hello.pas',
     'program Hello;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'uses SysUtils, Classes;'#10 +
@@ -160,7 +146,7 @@ begin
   RecursiveDelete(ExportScratch);
   ForceDirectories(ExportScratch + '/scripts');
 
-  WriteFile(ExportScratch + '/lwpt.toml',
+  WriteTextFile(ExportScratch + '/lwpt.toml',
     '[package]'#10 +
     'name = "run-export-script"'#10 +
     'version = "0.0.0"'#10 +
@@ -169,7 +155,7 @@ begin
     '[export]'#10 +
     'script = "scripts/export.pas"'#10);
 
-  WriteFile(ExportScratch + '/scripts/export.pas',
+  WriteTextFile(ExportScratch + '/scripts/export.pas',
     'program ExportScript;'#10 +
     '{$mode delphi}{$H+}'#10 +
     'uses SysUtils, Classes;'#10 +
