@@ -42,7 +42,11 @@ This workflow is explicit permission to commit relevant changes and push to the 
 
 5. If there is nothing new to commit (aside from an already-finished merge), skip to step 8.
 6. Stage only relevant files. Exclude secrets and unrelated local changes.
-7. Commit with a concise message via HEREDOC.
+7. Commit with a concise Conventional Commit message via HEREDOC:
+   - Subject format: `type(scope): summary`.
+   - Use one of: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`.
+   - Pick the narrowest accurate scope; omit the scope only when no meaningful scope exists.
+   - Use imperative mood, lowercase the summary after the type/scope, and do not end the subject with a period.
 8. Push (set upstream if needed):
 
    ```bash
@@ -50,7 +54,8 @@ This workflow is explicit permission to commit relevant changes and push to the 
    ```
 
 9. Reconcile PR title and body with the latest implementation:
-   - Read `.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE/` if present.
+   - Search `.github/pull_request_template.md` and `.github/PULL_REQUEST_TEMPLATE/`; read every matching PR template relevant to the current PR.
+   - Absence protocol: after the template search finds no PR template, state that no project PR template was found and reconcile against the existing PR body structure.
    - `gh pr view --json body,url,title`
    - Align title, Summary, Testing, linked issues, and scope with commits and verification.
    - Update title: `gh pr edit --title "$PR_TITLE"` when stale.
