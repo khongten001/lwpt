@@ -132,6 +132,7 @@ type
     Name      : string;            { logical name, e.g. "cli" }
     Source    : string;            { entry-point .pas/.dpr path }
     Output    : string;            { optional output binary path }
+    Depends   : TStringArray;      { prerequisite target names (ADR-0023) }
     PreBuild  : THookArray;        { per-target prebuild hooks (ADR-0011) }
     PostBuild : THookArray;        { per-target postbuild hooks (ADR-0011) }
   end;
@@ -648,6 +649,29 @@ begin
       SetLength(ATarget, n + 1);
       ATarget[n] := Item.ScalarText;
     end;
+  end;
+end;
+
+{ Build dependencies affect scheduler correctness, so malformed values must
+  fail instead of silently dropping graph edges. }
+procedure ReadStrictStringArray(ANode: TTOMLNode; const AKey, APath: string;
+  var ATarget: TStringArray);
+var
+  ArrNode: TTOMLNode;
+  i: Integer;
+begin
+  SetLength(ATarget, 0);
+  ArrNode := TomlGet(ANode, AKey);
+  if ArrNode = nil then Exit;
+  if not TomlIsArray(ArrNode) then
+    raise EManifestError.CreateFmt('%s must be an array of strings', [APath]);
+  SetLength(ATarget, ArrNode.Items.Count);
+  for i := 0 to ArrNode.Items.Count - 1 do
+  begin
+    if not TomlIsString(ArrNode.Items[i]) then
+      raise EManifestError.CreateFmt(
+        '%s[%d] must be a string', [APath, i]);
+    ATarget[i] := ArrNode.Items[i].ScalarText;
   end;
 end;
 
@@ -1474,6 +1498,8 @@ begin
         if AIsRoot then ValidateTargetName(T.Name);
         T.Source := TomlStr(TgtsNode, 'source', '');
         T.Output := TomlStr(TgtsNode, 'output', '');
+        ReadStrictStringArray(TgtsNode, 'depends', 'build.depends',
+          T.Depends);
         if T.Output = '' then T.Output := 'build/' + Result.Name;
         ParseHookSection(TomlGet(TgtsNode, 'prebuild'),
           'build.prebuild', T.PreBuild);
@@ -1495,6 +1521,8 @@ begin
           begin
             T.Source := TomlStr(TgtNode, 'source', '');
             T.Output := TomlStr(TgtNode, 'output', '');
+            ReadStrictStringArray(TgtNode, 'depends',
+              'build.' + T.Name + '.depends', T.Depends);
             ParseHookSection(TomlGet(TgtNode, 'prebuild'),
               'build.' + T.Name + '.prebuild', T.PreBuild);
             ParseHookSection(TomlGet(TgtNode, 'postbuild'),
