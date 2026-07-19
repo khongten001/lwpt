@@ -62,6 +62,7 @@ var
   BuildDir : string;
   i : Integer;
   Request: TLWPTBuildRequest;
+  ScanDirs: TStringArray;
 
   function SourceBuildKey(const APath: string): string;
   begin
@@ -169,6 +170,14 @@ begin
       end;
     Result.Parameters.Add('-o' + AOutBin);
     Result.Parameters.Add(ASrcFile);
+
+    { Every -Fu directory is now on the parameter list (explicit, cfg and
+      environment additions alike), so the staging path budget can be
+      checked against the real worst-case assembly file name. }
+    SetLength(ScanDirs, 0);
+    AppendUnitDirsFromOptions(Result.Parameters, ScanDirs);
+    EnsureCompilerPathBudget(BuildDir + '/units', BuildDir,
+      LongestCompiledBaseNameLength(ScanDirs, ASrcFile));
   except
     Result.Free;
     raise;

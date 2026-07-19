@@ -533,6 +533,7 @@ var
     Fingerprint, ProjectRoot, CfgPath, ModulesPath : string;
   i, FpcExit : Integer;
   Request: TLWPTBuildPublicationRequest;
+  ScanDirs: LWPT.Core.TStringArray;
 begin
   ACompiled := Default(TLWPTCompiledTarget);
   AOutput := '';
@@ -611,6 +612,13 @@ begin
     Request.BuildRequest.Inputs.IncludePaths);
   AddDeclaredOutputs(AMan, Request.ExcludedPaths);
   ValidateBuildRequest(Request.BuildRequest);
+  { The cfg reaches FPC unexpanded (@file), so its -Fu lines are read
+    through the same shared extractor the test flow uses. }
+  ScanDirs := Copy(Request.BuildRequest.Inputs.UnitPaths, 0,
+    Length(Request.BuildRequest.Inputs.UnitPaths));
+  AppendUnitDirsFromCfg(ResolveCfgFile(AMan), ScanDirs);
+  EnsureCompilerPathBudget(UnitOutDir, BinDir,
+    LongestCompiledBaseNameLength(ScanDirs, T.Source));
   Fingerprint := CaptureBuildPublicationFingerprint(ProjectRoot,
     AManifestPath, CfgPath, LOCKFILE, ModulesPath, Request);
 

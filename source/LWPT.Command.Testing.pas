@@ -446,8 +446,19 @@ var
   Binary, Output: string;
   Code: Integer;
 begin
-  CompilerProcess := CreatePascalCompilerProcess(FJobs[AIndex].Source,
-    FUnitPaths, Binary, FBuildRoot);
+  try
+    CompilerProcess := CreatePascalCompilerProcess(FJobs[AIndex].Source,
+      FUnitPaths, Binary, FBuildRoot);
+  except
+    { A staging path over the compiler's budget fails this one test with
+      the explanatory message instead of aborting the whole scheduler. }
+    on E: ELWPTError do
+    begin
+      SetJobOutput(AIndex, True, E.Message);
+      FailJob(AIndex, tjsCompileFailed, 1, E.Message);
+      Exit;
+    end;
+  end;
   try
     Code := RunProcess(AIndex, CompilerProcess, Output);
   finally
@@ -570,6 +581,28 @@ begin
   end;
 end;
 
+{ Test sources become session staging keys the same way build targets do.
+  Distinct sources sharing one key would silently share compiler staging —
+  the interference the private-session design exists to rule out — so the
+  scheduler refuses the run before any worker starts, mirroring the build
+  path's FindArtefactDirCollision. }
+function FindTestStagingKeyCollision(const ATests: TStringList;
+  out AFirst, ASecond: string): Boolean;
+var
+  i, j: Integer;
+begin
+  for i := 0 to ATests.Count - 1 do
+    for j := i + 1 to ATests.Count - 1 do
+      if SameText(BuildSessionPathKey(ATests[i]),
+                  BuildSessionPathKey(ATests[j])) then
+      begin
+        AFirst := ATests[i];
+        ASecond := ATests[j];
+        Exit(True);
+      end;
+  Result := False;
+end;
+
 function CmdTest(const AManifestPath: string; AIncludeE2E: Boolean;
   AJobs, ABail: Integer): Integer;
 const
@@ -578,7 +611,7 @@ var
   Man: TManifest;
   Tests: TStringList;
   UnitPaths: TStringArray;
-  ModulesRoot, ProjectRoot: string;
+  ModulesRoot, ProjectRoot, CollisionFirst, CollisionSecond: string;
   i, n, Passed, Failed, Skipped, CompileFailed, Cancelled: Integer;
   Session: TLWPTBuildSession;
   Scheduler: TTestScheduler;
@@ -631,11 +664,26 @@ begin
         Exit;
       end;
 
+      if FindTestStagingKeyCollision(Tests, CollisionFirst,
+        CollisionSecond) then
+      begin
+        WriteLn(ErrOutput, PROGRAM_NAME, ' test: test sources "',
+          CollisionFirst, '" and "', CollisionSecond,
+          '" map to the same session staging key ',
+          BuildSessionPathKey(CollisionFirst), ' — rename one');
+        Result := 1;
+        { Mirror the other exit paths: posttest cleanup/reporting hooks
+          run even when the scheduler never starts. }
+        RunHooks('posttest', Man.PostTest, Session.HookRoot);
+        Session.Finish(False, 'test staging key collision');
+        Exit;
+      end;
+
       WriteLn('discovered ', Tests.Count, ' test file(s)');
       if not AIncludeE2E then
         WriteLn('  (e2e tier skipped; pass --tier=e2e to include)');
       Scheduler := TTestScheduler.Create(Tests, AIncludeE2E, UnitPaths,
-        Session.JobRoot('test-programs'), AJobs, ABail);
+        Session.JobRoot('tests'), AJobs, ABail);
       try
         Scheduler.Run;
         Scheduler.PrintResults(ProjectRoot, Passed, Failed, CompileFailed,
