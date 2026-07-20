@@ -47,7 +47,7 @@ const
     reached and the isolation assertions flake. The happy path exits the
     wait loop as soon as the barrier is seen, so a large ceiling costs
     nothing when the machine is idle. }
-  ConcurrencyBarrierCeilingSeconds = 60;
+  ConcurrencyBarrierCeilingSeconds = 180;
 
 type
   TBuildSessions = class(TTestSuite)
@@ -86,6 +86,51 @@ type
 function SlowUnitName(const AIndex: Integer): string;
 begin
   Result := 'SlowUnit' + Format('%.3d', [AIndex]);
+end;
+
+{ When a nested build exits with an unexpected code, its captured output
+  is the only evidence of why — dump it into the suite's stdout so the
+  failure replay surfaces the cause directly in CI output. }
+procedure DumpRunFailure(const ALabel: string; const ARun: TLwptResult;
+  const AExpectedExit: Integer);
+begin
+  if ARun.ExitCode = AExpectedExit then Exit;
+  WriteLn('RUN FAILURE [', ALabel, '] exit=', ARun.ExitCode,
+    ' expected=', AExpectedExit);
+  WriteLn('--- captured stdout ---');
+  WriteLn(ARun.Stdout);
+  WriteLn('--- captured stderr ---');
+  WriteLn(ARun.Stderr);
+  WriteLn('--- end captured output ---');
+end;
+
+{ On a barrier timeout the suite's stdout is captured into its isolated
+  log and replayed by the failure path, so these lines surface directly
+  in CI output. They separate "the scheduler never dispatched the
+  target" (no START line in the replayed build output, no ready file)
+  from "the child was dispatched but never signalled ready" (START
+  present, ready file absent) without needing access to the runner. }
+procedure DumpBarrierDiagnostics(const ALabel, AReadyDir: string);
+var
+  Search: TSearchRec;
+  SawAny: Boolean;
+begin
+  WriteLn('BARRIER TIMEOUT [', ALabel, '] ready-dir ', AReadyDir, ':');
+  SawAny := False;
+  if FindFirst(IncludeTrailingPathDelimiter(AReadyDir) + 'ready-*',
+    faAnyFile, Search) = 0 then
+  try
+    repeat
+      if (Search.Attr and faDirectory) = 0 then
+      begin
+        WriteLn('  ready: ', Search.Name);
+        SawAny := True;
+      end;
+    until FindNext(Search) <> 0;
+  finally
+    FindClose(Search);
+  end;
+  if not SawAny then WriteLn('  (no ready files)');
 end;
 
 function RunProgram(const APath: string): Integer;
@@ -430,6 +475,11 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    { Diagnostics before the release/wait: a child that hung before
+      signalling ready would never see the release and WaitOnExit would
+      block with the evidence still unflushed. }
+    if not (SawTwoSessions and SawTwoJobRoots) then
+      DumpBarrierDiagnostics('concurrent-sessions', ReadyDir);
     WriteTextFile(ReleasePath, 'release');
     First.WaitOnExit;
     Second.WaitOnExit;
@@ -505,6 +555,10 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    { Diagnostics before the release/wait — see the concurrent-sessions
+      note: a hung child would block WaitOnExit with evidence unflushed. }
+    if not Ready then
+      DumpBarrierDiagnostics('distinct-outputs', ReadyDir);
     WriteTextFile(ReleasePath, 'release');
     First.WaitOnExit;
     Second.WaitOnExit;
@@ -726,6 +780,9 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    if not (TargetReady(ReadyDir, 'alpha')
+      and TargetReady(ReadyDir, 'beta')) then
+      DumpBarrierDiagnostics('overlap: alpha+beta ready', ReadyDir);
     Expect<Boolean>(TargetReady(ReadyDir, 'alpha')).ToBe(True);
     Expect<Boolean>(TargetReady(ReadyDir, 'beta')).ToBe(True);
     Expect<Boolean>(TargetReady(ReadyDir, 'app')).ToBe(False);
@@ -742,6 +799,8 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    if not TargetReady(ReadyDir, 'app') then
+      DumpBarrierDiagnostics('app ready after releases', ReadyDir);
     Expect<Boolean>(TargetReady(ReadyDir, 'app')).ToBe(True);
     Expect<Boolean>(FileExists(ExpectedExe(Project + '/build/alpha')))
       .ToBe(True);
@@ -791,6 +850,8 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    if not TargetReady(ReadyDir, 'alpha') then
+      DumpBarrierDiagnostics('sequential: alpha ready', ReadyDir);
     Expect<Boolean>(TargetReady(ReadyDir, 'alpha')).ToBe(True);
     Expect<Boolean>(TargetReady(ReadyDir, 'beta')).ToBe(False);
     WriteTextFile(ReleaseDir + '/alpha', 'release');
@@ -800,6 +861,8 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    if not TargetReady(ReadyDir, 'beta') then
+      DumpBarrierDiagnostics('sequential: beta ready', ReadyDir);
     Expect<Boolean>(TargetReady(ReadyDir, 'beta')).ToBe(True);
     Expect<Boolean>(TargetReady(ReadyDir, 'app')).ToBe(False);
     WriteTextFile(ReleaseDir + '/beta', 'release');
@@ -809,6 +872,8 @@ begin
       if (Now - Started) * 86400 > ConcurrencyBarrierCeilingSeconds then Break;
       Sleep(10);
     end;
+    if not TargetReady(ReadyDir, 'app') then
+      DumpBarrierDiagnostics('app ready after releases', ReadyDir);
     Expect<Boolean>(TargetReady(ReadyDir, 'app')).ToBe(True);
     WriteTextFile(ReleaseDir + '/app', 'release');
     Build.WaitOnExit;
@@ -898,6 +963,7 @@ begin
   try
     RunResult := RunLwptWithWorkerEnv(
       ['build', 'alpha', 'beta'], Project, QuietEnvironment);
+    DumpRunFailure('observable: quiet build', RunResult, 0);
     Expect<Integer>(RunResult.ExitCode).ToBe(0);
     Expect<Boolean>(Pos('alpha-begin|', RunResult.Stdout) = 0).ToBe(True);
     Expect<Boolean>(Pos('beta-begin|', RunResult.Stdout) = 0).ToBe(True);
@@ -905,6 +971,7 @@ begin
 
     RunResult := RunLwptWithWorkerEnv(
       ['build', 'alpha', 'beta', '--verbose'], Project, Environment);
+    DumpRunFailure('observable: verbose build', RunResult, 0);
     Expect<Integer>(RunResult.ExitCode).ToBe(0);
     Expect<Boolean>(Pos('discovered 2 build target(s)', RunResult.Stdout) > 0)
       .ToBe(True);
@@ -973,6 +1040,7 @@ begin
       + IntToStr(TestHeartbeatIntervalMilliseconds);
     RunResult := RunLwpt(['build', 'alpha'], Project, Environment);
 
+    DumpRunFailure('contended: queued build', RunResult, 0);
     Expect<Integer>(RunResult.ExitCode).ToBe(0);
     Expect<Boolean>(Pos('HEARTBEAT build elapsed ', RunResult.Stdout) > 0)
       .ToBe(True);
