@@ -33,6 +33,10 @@ uses
   The scope is composed declaratively from the manifest:
     seed     = [package].units (each as plain dir, non-recursive)
     add      = [format].include (globs)
+    protect  = toolkit state (.lwpt/** plus any [lwpt] modules-dir /
+               archives-dir / tmp-dir / cfg-file override paths, which
+               may sit outside .lwpt/) unless matched by an explicit
+               include
     subtract = [format].exclude (globs)
 
   Glob syntax:
@@ -271,10 +275,28 @@ end;
 function CmdFormat(const AManifestPath: string; ACheckOnly: Boolean): Integer;
 var
   Man : TManifest;
-  Files, ExcludeSet, FinalFiles : TStringList;
+  Files, ExplicitIncludeSet, ExcludeSet, FinalFiles : TStringList;
+  ProtectedRoots : TStringList;
   i, Changed : Integer;
-  Path : string;
+  Path, ProtectedCfgFile : string;
   RunMode : TRunMode;
+
+  procedure AddProtectedRoot(const ADir: string);
+  begin
+    if ADir = '' then Exit;
+    ProtectedRoots.Add(IncludeTrailingPathDelimiter(ExpandFileName(ADir)));
+  end;
+
+  function IsToolkitStatePath(const AAbsPath: string): Boolean;
+  var r: Integer;
+  begin
+    if AAbsPath = ProtectedCfgFile then Exit(True);
+    for r := 0 to ProtectedRoots.Count - 1 do
+      if Copy(AAbsPath, 1, Length(ProtectedRoots[r])) = ProtectedRoots[r] then
+        Exit(True);
+    Result := False;
+  end;
+
 begin
   Man := LoadManifest(AManifestPath);
 
@@ -283,17 +305,30 @@ begin
   else
     RunMode := rmFormat;
 
-  Files       := TStringList.Create;
-  ExcludeSet  := TStringList.Create;
-  FinalFiles  := TStringList.Create;
+  Files              := TStringList.Create;
+  ExplicitIncludeSet := TStringList.Create;
+  ExcludeSet         := TStringList.Create;
+  FinalFiles         := TStringList.Create;
+  ProtectedRoots     := TStringList.Create;
   try
+    { Paths and globs are case-sensitive on every platform (ADR-0007).
+      TStringList defaults to case-insensitive lookup, so make the
+      membership sets match the format-scope contract explicitly. }
+    Files.CaseSensitive              := True;
+    ExplicitIncludeSet.CaseSensitive := True;
+    ExcludeSet.CaseSensitive         := True;
+    FinalFiles.CaseSensitive         := True;
+    ProtectedRoots.CaseSensitive     := True;
+
     { Seed: [package].units (non-recursive — see ADR-0007). }
     for i := 0 to High(Man.Units) do
       CollectFormattableInDir(Man.Units[i], Files);
 
-    { Add: [format].include. Literal-path-missing is a hard error. }
+    { Add: [format].include. Keep the resolved set separately because
+      explicit includes override the default toolkit-state exclusion. }
     for i := 0 to High(Man.FormatIncludes) do
-      ExpandFormatPattern(Man.FormatIncludes[i], Files, True);
+      ExpandFormatPattern(Man.FormatIncludes[i], ExplicitIncludeSet, True);
+    Files.AddStrings(ExplicitIncludeSet);
 
     { Fallback: both sources empty → walk cwd non-recursively. Lets
       single-file scripts work without manifest ceremony. }
@@ -305,13 +340,24 @@ begin
       ExpandFormatPattern(Man.FormatExcludes[i], ExcludeSet, True);
 
     DedupAbsolutePaths(Files);
+    DedupAbsolutePaths(ExplicitIncludeSet);
     DedupAbsolutePaths(ExcludeSet);
+
+    { [lwpt] can redirect any of these outside .lwpt/, so each resolved
+      path is protected individually alongside the fixed root. }
+    AddProtectedRoot(LWPT_DIR);
+    AddProtectedRoot(ResolveModulesDir(Man));
+    AddProtectedRoot(ResolveArchivesDir(Man));
+    AddProtectedRoot(ResolveTmpDir(Man));
+    ProtectedCfgFile := ExpandFileName(ResolveCfgFile(Man));
 
     for i := 0 to Files.Count - 1 do
     begin
       Path := Files[i];
-      if ExcludeSet.IndexOf(Path) < 0 then
-        FinalFiles.Add(Path);
+      if ExcludeSet.IndexOf(Path) >= 0 then Continue;
+      if IsToolkitStatePath(Path)
+         and (ExplicitIncludeSet.IndexOf(Path) < 0) then Continue;
+      FinalFiles.Add(Path);
     end;
 
     if FinalFiles.Count = 0 then
@@ -357,8 +403,10 @@ begin
     end;
   finally
     Files.Free;
+    ExplicitIncludeSet.Free;
     ExcludeSet.Free;
     FinalFiles.Free;
+    ProtectedRoots.Free;
   end;
 end;
 
